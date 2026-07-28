@@ -15,3 +15,5 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
+
+const authUrl = `/api/backend/auth/google?frontend=${window.location.origin}`;
