@@ -1,27 +1,16 @@
 {
-  "services": {
-    "frontend": {
-      "root": "frontend_nj",
-      "framework": "nextjs"
-    },
-    "backend": {
-      "root": "backend",
-      "entrypoint": "main:app"
+  "buildCommand": "npm run build",
+  "outputDirectory": "frontend_nj/.next",
+  "builds": [
+    {
+      "src": "backend/main.py",
+      "use": "@vercel/python"
     }
-  },
-  "rewrites": [
+  ],
+  "routes": [
     {
-      "source": "/api/backend/:path*",
-      "destination": {
-        "service": "backend",
-        "path": "/:path*"
-      }
-    },
-    {
-      "source": "/:path*",
-      "destination": {
-        "service": "frontend"
-      }
+      "src": "/api/backend/(.*)",
+      "dest": "backend/main.py"
     }
   ]
 }
