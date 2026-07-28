@@ -1,4 +1,4 @@
-import { createClient } from '@/utils/supabase/server'
+import { createClient } from 'backend/supabase/utils/supabase/server'
 import { cookies } from 'next/headers'
 
 type UserRow = {
