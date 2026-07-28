@@ -1,0 +1,18 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - NEXT_PUBLIC_API_URL=${_NEXT_PUBLIC_API_URL}
+      - -t
+      - ${_IMAGE_NAME}
+      - -f
+      - frontend_nj/Dockerfile
+      - frontend_nj
+images:
+  - ${_IMAGE_NAME}
+substitutions:
+  _NEXT_PUBLIC_API_URL: https://tiered-web-app-api-619970836237.northamerica-northeast2.run.app
+  _IMAGE_NAME: northamerica-northeast2-docker.pkg.dev/project-4a4cbdf0-7c5c-427b-98d/cloud-run-source-deploy/property-frontend-nj
+options:
+  logging: CLOUD_LOGGING_ONLY
