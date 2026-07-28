@@ -1,7 +1,0 @@
-{
-  "name": "property-app-root",
-  "private": true,
-  "scripts": {
-    "build": "cd frontend_nj && npm install && npm run build"
-  }
-}
