@@ -4,40 +4,43 @@ import sqlalchemy
 from sqlalchemy import text
 
 _engine: sqlalchemy.engine.Engine | None = None
-_connector = None
 
 
 def get_engine() -> sqlalchemy.engine.Engine:
-    global _engine, _connector
+    global _engine
     if _engine is not None:
         return _engine
 
-    if os.environ.get("ENV") == "local":
-        db_user = os.environ["db_user"]
-        db_password = os.environ["db_password"]
-        db_name = os.environ["db_name"]
-        db_host = os.environ.get("db_host", "localhost")
-        db_port = os.environ.get("db_port", "5432")
+    # Option 1: Use a single DATABASE_URL environment variable (Recommended for Vercel/Supabase)
+    database_url = os.environ.get("DATABASE_URL")
+
+    if database_url:
+        # Supabase URIs start with postgresql:// or postgres://
+        # If using pg8000 driver, ensure the prefix is postgresql+pg8000://
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql+pg8000://", 1)
+        elif database_url.startswith("postgresql://"):
+            database_url = database_url.replace("postgresql://", "postgresql+pg8000://", 1)
+
         _engine = sqlalchemy.create_engine(
-            f"postgresql+pg8000://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+            database_url,
+            pool_pre_ping=True,  # Keeps connections fresh
         )
     else:
-        from google.cloud.sql.connector import Connector, IPTypes
-        _connector = Connector()
+        # Option 2: Fallback to individual credentials
+        db_user = os.environ.get("db_user", "postgres")
+        db_password = os.environ["db_password"]
+        db_host = os.environ["db_host"]  # e.g., db.xxxx.supabase.co or aws-0-xx.pooler.supabase.com
+        db_port = os.environ.get("db_port", "5432")  # 5432 or 6543 (transaction pooler)
+        db_name = os.environ.get("db_name", "postgres")
 
-        def getconn():
-            return _connector.connect(
-                os.environ["db_conn"],
-                "pg8000",
-                user=os.environ["db_user"],
-                db=os.environ["db_name"],
-                enable_iam_auth=True,
-                ip_type=IPTypes.PRIVATE,
-            )
+        connection_str = (
+            f"postgresql+pg8000://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+        )
 
         _engine = sqlalchemy.create_engine(
-            "postgresql+pg8000://",
-            creator=getconn,
+            connection_str,
+            pool_pre_ping=True,
         )
 
     return _engine
@@ -48,32 +51,14 @@ def get_connection():
 
 
 def set_org_context(conn, org_id: int):
-    """
-    Sets app.current_org_id on an already-open connection/transaction, for RLS.
-    Uses set_config(..., is_local=True) rather than SET LOCAL app.current_org_id = :oid
-    — Postgres's SET command only accepts literal constants, not bind parameters,
-    so a parameterized SET LOCAL fails with a syntax error under the extended
-    query protocol. set_config() is a regular function call and accepts
-    parameters, with the same transaction-scoped (is_local=True) behavior.
-
-    Use this mid-transaction when a plain get_connection() needs to write to an
-    RLS-protected table partway through — e.g. signup, which creates an org
-    (unprotected) then must seed org-scoped reference rows (protected) for it,
-    all within the same atomic transaction.
-    """
-    conn.execute(text("SELECT set_config('app.current_org_id', CAST(:oid AS text), true)"), {"oid": org_id})
+    conn.execute(
+        text("SELECT set_config('app.current_org_id', CAST(:oid AS text), true)"),
+        {"oid": org_id},
+    )
 
 
 @contextmanager
 def get_connection_for_org(org_id: int):
-    """
-    Yields a SQLAlchemy connection with app.current_org_id set for the duration
-    of the transaction — see set_org_context() for why set_config() is used
-    instead of SET LOCAL.
-
-    Use this for all /api/v1/rental/* endpoints. Auth endpoints that look up
-    users before org context is known should use plain get_connection().
-    """
     with get_engine().connect() as conn:
         set_org_context(conn, org_id)
         yield conn
