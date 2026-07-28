@@ -1,13 +1,12 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { setToken, clearToken } from "@/lib/api";
 
 function Redirect() {
   const router = useRouter();
   const params = useSearchParams();
-  const [status, setStatus] = useState("Checking authentication...");
 
   useEffect(() => {
     const googleToken = params.get("token");
@@ -23,17 +22,12 @@ function Redirect() {
       return;
     }
 
-    setStatus("Verifying existing session...");
+    // Verify token is still valid by calling /auth/me
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 3000);
-
     fetch(`${apiUrl}/auth/me`, {
-      headers: { Authorization: `Bearer ${existing}` },
-      signal: controller.signal,
+      headers: { "Authorization": `Bearer ${existing}` },
     })
       .then((res) => {
-        window.clearTimeout(timeout);
         if (res.ok) {
           router.replace("/dashboard");
         } else {
@@ -42,24 +36,17 @@ function Redirect() {
         }
       })
       .catch(() => {
-        window.clearTimeout(timeout);
         clearToken();
         router.replace("/login");
       });
   }, [router, params]);
 
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-white">
-      <div className="text-center px-4 py-8">
-        <p className="text-sm text-gray-500">{status}</p>
-      </div>
-    </div>
-  );
+  return null;
 }
 
 export default function RootPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-white"><p className="text-sm text-gray-500">Loading...</p></div>}>
+    <Suspense>
       <Redirect />
     </Suspense>
   );

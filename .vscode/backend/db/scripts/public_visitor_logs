@@ -1,0 +1,19 @@
+CREATE TABLE IF NOT EXISTS web.public_visitor_logs (
+    id SERIAL PRIMARY KEY,
+    visit_timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    -- Unique ID generated for the visitor's browser session (e.g., via a cookie)
+    visitor_uuid UUID DEFAULT gen_random_uuid(), 
+    session_id TEXT, -- Groups multiple page views into one visit
+    region TEXT,
+    country TEXT,
+    ip_address INET,
+    device_type TEXT, -- Mobile, Desktop, Tablet
+    browser TEXT,
+    referrer_url TEXT, -- Where the user came from (Google, social media, etc.)
+    pages_visited JSONB, -- Array of page paths and timestamps
+    total_pages_viewed INT DEFAULT 1
+);
+
+-- Indexing for high-traffic analytics
+CREATE INDEX idx_visitor_uuid ON web.public_visitor_logs (visitor_uuid);
+CREATE INDEX idx_visit_time ON web.public_visitor_logs (visit_timestamp);

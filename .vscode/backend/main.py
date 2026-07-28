@@ -261,18 +261,15 @@ def google_login(frontend: Optional[str] = None):
     """
     import urllib.parse
     state = urllib.parse.quote(frontend or FRONTEND_URL)
-    params = urllib.parse.urlencode({
-        "client_id":    GOOGLE_CLIENT_ID,
-        "redirect_uri": GOOGLE_REDIRECT_URI,
-        "response_type": "code",
-        "scope":         "openid email profile",
-        "access_type":   "offline",
-        "state":         state,
-    })
-    return RedirectResponse(
-        f"https://accounts.google.com/o/oauth2/v2/auth?{params}",
-        status_code=302,
+    params = (
+        f"client_id={GOOGLE_CLIENT_ID}"
+        f"&redirect_uri={GOOGLE_REDIRECT_URI}"
+        f"&response_type=code"
+        f"&scope=openid%20email%20profile"
+        f"&access_type=offline"
+        f"&state={state}"
     )
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
 
 
 @app.get("/auth/google/callback")
@@ -359,11 +356,7 @@ def google_callback(code: str, state: Optional[str] = None):
                         "name": name, "theme": theme, "company_name": company})
     import urllib.parse
     redirect_base = urllib.parse.unquote(state) if state else FRONTEND_URL
-    parsed = urllib.parse.urlparse(redirect_base)
-    query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
-    query.update({"token": token, "theme": theme})
-    redirect_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
-    return RedirectResponse(redirect_url, status_code=302)
+    return RedirectResponse(f"{redirect_base}?token={token}&theme={theme}")
 
 
 @app.get("/auth/me")
