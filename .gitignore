@@ -19,3 +19,8 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# db scripts
+*.sql
+&.pgerd
+public_visitor_log
