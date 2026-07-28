@@ -1,16 +1,27 @@
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "frontend_nj/.next",
-  "builds": [
-    {
-      "src": "backend/main.py",
-      "use": "@vercel/python"
+  "services": {
+    "frontend": {
+      "root": "frontend_nj",
+      "framework": "nextjs"
+    },
+    "backend": {
+      "root": "backend",
+      "entrypoint": "main:app"
     }
-  ],
-  "routes": [
+  },
+  "rewrites": [
     {
-      "src": "/api/backend/(.*)",
-      "dest": "backend/main.py"
+      "source": "/api/backend/:path*",
+      "destination": {
+        "service": "backend",
+        "path": "/:path*"
+      }
+    },
+    {
+      "source": "/:path*",
+      "destination": {
+        "service": "frontend"
+      }
     }
   ]
 }
