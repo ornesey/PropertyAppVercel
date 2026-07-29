@@ -77,6 +77,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:8501",
+        "https://property-app-azure.vercel.app",  # Your main Vercel frontend
         "https://sr-repo-git-619970836237.northamerica-northeast2.run.app",
     ],
     allow_credentials=True,
