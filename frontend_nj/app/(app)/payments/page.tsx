@@ -231,7 +231,7 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
                       Already collected: <strong>{fmt(paid)}</strong> — Remaining: <strong>{fmt(remaining)}</strong>
                     </p>
                   )}
-                  <Input label="Amount ($)" value={payAmt} onChange={setPayAmt} type="number" min="0" step="25" />
+                  <Input label="Amount ($)" value={payAmt} onChange={setPayAmt} type="number" min="0.01" step="0.01" />
                   <Input label="Date" value={payDate} onChange={setPayDate} type="date" />
                   <Select label="Method" value={payMethod} onChange={setPayMethod}
                     options={methods.map((m) => ({ value: m.code, label: m.label }))} />
