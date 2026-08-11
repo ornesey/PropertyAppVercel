@@ -52,11 +52,6 @@ export default function ProfilePage() {
   const [savingPw, setSavingPw] = useState(false);
   const [pwMsg, setPwMsg]       = useState("");
 
-  // Theme
-  const [theme, setTheme]       = useState("light");
-  const [savingTheme, setSavingTheme] = useState(false);
-  const [themeMsg, setThemeMsg] = useState("");
-
   useEffect(() => {
     const token = localStorage.getItem("auth_token");
     if (!token) { router.push("/login"); return; }
@@ -64,11 +59,9 @@ export default function ProfilePage() {
       // JWT is minted at login and never refreshed — merge saved overrides from localStorage
       const savedName    = localStorage.getItem("profile_name");
       const savedCompany = localStorage.getItem("profile_company");
-      const savedTheme   = localStorage.getItem("profile_theme");
       setUser(u);
       setName(savedName    ?? u.name         ?? "");
       setCompany(savedCompany ?? u.company_name ?? "");
-      setTheme(savedTheme  ?? u.theme        ?? "light");
       setLoading(false);
     });
   }, [router]);
@@ -112,21 +105,6 @@ export default function ProfilePage() {
       setPwMsg(`❌ ${err instanceof Error ? err.message : "Failed to change password."}`);
     } finally {
       setSavingPw(false);
-    }
-  }
-
-  async function saveTheme(e: React.FormEvent) {
-    e.preventDefault();
-    setSavingTheme(true);
-    setThemeMsg("");
-    try {
-      await api("PATCH", "/auth/profile", { theme_preference: theme });
-      localStorage.setItem("profile_theme", theme);
-      setThemeMsg("✅ Appearance saved.");
-    } catch (err: unknown) {
-      setThemeMsg(`❌ ${err instanceof Error ? err.message : "Failed to save."}`);
-    } finally {
-      setSavingTheme(false);
     }
   }
 
@@ -181,30 +159,6 @@ export default function ProfilePage() {
           <button type="submit" disabled={savingPw}
             className="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50">
             {savingPw ? "Saving…" : "Change Password"}
-          </button>
-        </form>
-      </section>
-
-      {/* Theme */}
-      <section className="bg-white border border-gray-100 rounded-xl shadow-sm p-5 space-y-4">
-        <h2 className="text-sm font-semibold text-gray-700">Appearance</h2>
-        <form onSubmit={saveTheme} className="space-y-3">
-          <div className="flex gap-3">
-            {(["light", "dark"] as const).map((t) => (
-              <button key={t} type="button" onClick={() => setTheme(t)}
-                className={`px-4 py-2 text-sm rounded-lg border transition-colors ${
-                  theme === t
-                    ? "bg-blue-600 text-white border-blue-600"
-                    : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"
-                }`}>
-                {t === "light" ? "☀️ Light" : "🌙 Dark"}
-              </button>
-            ))}
-          </div>
-          <StatusMsg msg={themeMsg} />
-          <button type="submit" disabled={savingTheme}
-            className="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50">
-            {savingTheme ? "Saving…" : "Save Appearance"}
           </button>
         </form>
       </section>
