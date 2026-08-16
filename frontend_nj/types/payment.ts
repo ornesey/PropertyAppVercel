@@ -20,6 +20,23 @@ export interface RentRollRow {
   promised_amount: number | null;
   payment_method_label: string | null;
   payment_notes: string | null;
+  adjustment_total: number;
+}
+
+export interface Promise {
+  promise_id: number;
+  ledger_id: number;
+  promised_date: string;
+  promised_amount: number;
+  notes: string | null;
+}
+
+export interface Adjustment {
+  adjustment_id: number;
+  ledger_id: number;
+  amount: number;
+  reason: string;
+  created_at: string;
 }
 
 export interface PaymentMethod {

@@ -24,3 +24,15 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* iOS Safari ignores `color` on form controls and uses its own default.
+   -webkit-text-fill-color overrides it and is the only reliable fix. */
+input, select, textarea {
+  color: #111827;
+  -webkit-text-fill-color: #111827;
+}
+
+input::placeholder, textarea::placeholder {
+  color: #9ca3af;
+  -webkit-text-fill-color: #9ca3af;
+}

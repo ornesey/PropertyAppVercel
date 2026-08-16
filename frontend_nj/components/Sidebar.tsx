@@ -11,6 +11,7 @@ const NAV = [
   { href: "/leases",       icon: "📋", label: "Leases" },
   { href: "/notices",      icon: "📄", label: "Notices" },
   { href: "/payments",     icon: "💳", label: "Payments" },
+  { href: "/deposits",     icon: "🏦", label: "Deposits" },
   { href: "/maintenance",  icon: "🔧", label: "Maintenance" },
   { href: "/expenses",     icon: "💰", label: "Expenses" },
   { href: "/vendors",      icon: "🏪", label: "Vendors" },

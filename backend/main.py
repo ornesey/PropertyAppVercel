@@ -77,7 +77,6 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:8501",
-        "https://property-app-azure.vercel.app",  # Your main Vercel frontend
         "https://sr-repo-git-619970836237.northamerica-northeast2.run.app",
     ],
     allow_credentials=True,
@@ -262,18 +261,15 @@ def google_login(frontend: Optional[str] = None):
     """
     import urllib.parse
     state = urllib.parse.quote(frontend or FRONTEND_URL)
-    params = urllib.parse.urlencode({
-        "client_id":    GOOGLE_CLIENT_ID,
-        "redirect_uri": GOOGLE_REDIRECT_URI,
-        "response_type": "code",
-        "scope":         "openid email profile",
-        "access_type":   "offline",
-        "state":         state,
-    })
-    return RedirectResponse(
-        f"https://accounts.google.com/o/oauth2/v2/auth?{params}",
-        status_code=302,
+    params = (
+        f"client_id={GOOGLE_CLIENT_ID}"
+        f"&redirect_uri={GOOGLE_REDIRECT_URI}"
+        f"&response_type=code"
+        f"&scope=openid%20email%20profile"
+        f"&access_type=offline"
+        f"&state={state}"
     )
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
 
 
 @app.get("/auth/google/callback")
@@ -360,11 +356,7 @@ def google_callback(code: str, state: Optional[str] = None):
                         "name": name, "theme": theme, "company_name": company})
     import urllib.parse
     redirect_base = urllib.parse.unquote(state) if state else FRONTEND_URL
-    parsed = urllib.parse.urlparse(redirect_base)
-    query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
-    query.update({"token": token, "theme": theme})
-    redirect_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
-    return RedirectResponse(redirect_url, status_code=302)
+    return RedirectResponse(f"{redirect_base}?token={token}&theme={theme}")
 
 
 @app.get("/auth/me")
@@ -1385,14 +1377,17 @@ def record_payment_instalment(ledger_id: int, body: PaymentInstalment, org_id: i
     """Add a payment instalment — accumulates on top of any existing amount_paid.
     Automatically sets status to paid/partial based on total collected vs amount_due."""
     with get_connection_for_org(org_id) as conn:
-        row = conn.execute(sql(
-            "SELECT amount_due, COALESCE(amount_paid, 0) AS already_paid FROM rental.rent_ledger WHERE ledger_id = :id"
-        ), {"id": ledger_id}).mappings().fetchone()
+        row = conn.execute(sql("""
+            SELECT rl.amount_due, COALESCE(rl.amount_paid, 0) AS already_paid,
+                   COALESCE((SELECT SUM(amount) FROM rental.rent_adjustments WHERE ledger_id = :id), 0) AS adjustment_total
+            FROM rental.rent_ledger rl WHERE rl.ledger_id = :id
+        """), {"id": ledger_id}).mappings().fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Ledger entry not found")
 
+        net_due   = float(row["amount_due"]) + float(row["adjustment_total"])
         new_total = float(row["already_paid"]) + body.amount
-        new_status = "paid" if new_total >= float(row["amount_due"]) else "partial"
+        new_status = "paid" if new_total >= net_due else "partial"
 
         # Build notes string in Python to avoid duplicate named params in SQL
         existing_notes = conn.execute(sql(
@@ -1484,7 +1479,8 @@ def get_rent_roll(month: str, org_id: int = Depends(get_org_id)):
                 rl.promised_date,
                 rl.promised_amount,
                 pm.label         AS payment_method_label,
-                rl.notes         AS payment_notes
+                rl.notes         AS payment_notes,
+                COALESCE(ra.adjustment_total, 0) AS adjustment_total
             FROM rental.lease_members lm
             JOIN rental.leases l       ON l.lease_id   = lm.lease_id
             JOIN rental.tenants t      ON t.tenant_id  = lm.tenant_id
@@ -1496,6 +1492,11 @@ def get_rent_roll(month: str, org_id: int = Depends(get_org_id)):
                AND rl.tenant_id = lm.tenant_id
                AND DATE_TRUNC('month', rl.due_date) = :month_start
             LEFT JOIN rental.ref_payment_methods pm ON pm.code = rl.payment_method_code
+            LEFT JOIN (
+                SELECT ledger_id, SUM(amount) AS adjustment_total
+                FROM rental.rent_adjustments
+                GROUP BY ledger_id
+            ) ra ON ra.ledger_id = rl.ledger_id
             WHERE (l.status_code IN (1, 2) OR l.status = 'active')
               AND l.start_date <= :due_date
               AND (l.end_date IS NULL OR l.end_date >= :due_date)
@@ -2802,4 +2803,202 @@ def unassign_person_from_property(person_id: int, property_id: int, org_id: int 
             DELETE FROM rental.property_persons
             WHERE property_id = :property_id AND person_id = :person_id
         """), {"property_id": property_id, "person_id": person_id})
+        conn.commit()
+
+
+# ─── Tenant Deposits ──────────────────────────────────────────────────────────
+
+class DepositBody(BaseModel):
+    lease_id:  int
+    tenant_id: int
+    amount:    float
+    paid_date: date
+    notes:     Optional[str] = None
+
+class DepositApply(BaseModel):
+    ledger_id: int
+
+@app.get("/api/v1/rental/deposits")
+def get_deposits(tenant_id: Optional[int] = None, org_id: int = Depends(get_org_id)):
+    filters, params = ["d.org_id = :org_id"], {"org_id": org_id}
+    if tenant_id:
+        filters.append("d.tenant_id = :tenant_id")
+        params["tenant_id"] = tenant_id
+    where = "WHERE " + " AND ".join(filters)
+    with get_connection_for_org(org_id) as conn:
+        rows = conn.execute(sql(f"""
+            SELECT d.deposit_id, d.lease_id, d.tenant_id, d.amount, d.paid_date,
+                   d.status, d.applied_ledger_id, d.notes, d.created_at,
+                   t.first_name || ' ' || t.last_name AS tenant_name,
+                   rs.space_name, u.unit_number, p.address,
+                   rl.due_date AS applied_due_date
+            FROM rental.tenant_deposits d
+            JOIN rental.tenants t ON t.tenant_id = d.tenant_id
+            JOIN rental.leases l ON l.lease_id = d.lease_id
+            JOIN rental.rentable_spaces rs ON rs.space_id = l.space_id
+            JOIN rental.units u ON u.unit_id = rs.unit_id
+            JOIN rental.properties p ON p.property_id = u.property_id
+            LEFT JOIN rental.rent_ledger rl ON rl.ledger_id = d.applied_ledger_id
+            {where}
+            ORDER BY d.paid_date DESC
+        """), params).mappings().all()
+    return [dict(r) for r in rows]
+
+@app.post("/api/v1/rental/deposits", status_code=201)
+def create_deposit(body: DepositBody, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        result = conn.execute(sql("""
+            INSERT INTO rental.tenant_deposits (lease_id, tenant_id, amount, paid_date, notes, org_id)
+            VALUES (:lease_id, :tenant_id, :amount, :paid_date, :notes, :org_id)
+            RETURNING deposit_id
+        """), {**body.model_dump(), "org_id": org_id})
+        dep_id = result.fetchone()[0]
+        conn.commit()
+    return {"deposit_id": dep_id}
+
+@app.patch("/api/v1/rental/deposits/{deposit_id}/apply")
+def apply_deposit(deposit_id: int, body: DepositApply, org_id: int = Depends(get_org_id)):
+    """Mark a deposit as applied and record the payment on the rent ledger entry."""
+    with get_connection_for_org(org_id) as conn:
+        # Get deposit details
+        dep = conn.execute(sql(
+            "SELECT amount, tenant_id FROM rental.tenant_deposits WHERE deposit_id = :id"
+        ), {"id": deposit_id}).mappings().fetchone()
+        if not dep:
+            raise HTTPException(status_code=404, detail="Deposit not found")
+
+        # Get ledger entry's current state
+        ledger = conn.execute(sql("""
+            SELECT rl.amount_due, COALESCE(rl.amount_paid, 0) AS already_paid,
+                   COALESCE((SELECT SUM(amount) FROM rental.rent_adjustments WHERE ledger_id = :lid), 0) AS adjustment_total
+            FROM rental.rent_ledger rl WHERE rl.ledger_id = :lid
+        """), {"lid": body.ledger_id}).mappings().fetchone()
+        if not ledger:
+            raise HTTPException(status_code=404, detail="Ledger entry not found")
+
+        dep_amount = float(dep["amount"])
+        net_due    = float(ledger["amount_due"]) + float(ledger["adjustment_total"])
+        new_total  = float(ledger["already_paid"]) + dep_amount
+        new_status = "paid" if new_total >= net_due else "partial"
+
+        # Mark deposit as applied
+        conn.execute(sql("""
+            UPDATE rental.tenant_deposits
+            SET status = 'applied', applied_ledger_id = :ledger_id
+            WHERE deposit_id = :deposit_id
+        """), {"deposit_id": deposit_id, "ledger_id": body.ledger_id})
+
+        # Record payment on the ledger
+        conn.execute(sql("""
+            UPDATE rental.rent_ledger
+            SET amount_paid         = :total,
+                paid_date           = CURRENT_DATE,
+                payment_method_code = 'L',
+                status              = :status
+            WHERE ledger_id = :lid
+        """), {"total": new_total, "status": new_status, "lid": body.ledger_id})
+
+        # Insert transaction history entry
+        conn.execute(sql("""
+            INSERT INTO rental.payment_transactions
+                (ledger_id, amount, paid_date, payment_method_code, notes, org_id)
+            VALUES (:ledger_id, :amount, CURRENT_DATE, 'L', 'Last month deposit applied', :org_id)
+        """), {"ledger_id": body.ledger_id, "amount": dep_amount, "org_id": org_id})
+
+        conn.commit()
+    return {"updated": deposit_id, "ledger_status": new_status}
+
+@app.delete("/api/v1/rental/deposits/{deposit_id}", status_code=204)
+def delete_deposit(deposit_id: int, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        conn.execute(sql("DELETE FROM rental.tenant_deposits WHERE deposit_id = :id"), {"id": deposit_id})
+        conn.commit()
+
+
+# ─── Payment Promises ─────────────────────────────────────────────────────────
+
+class PromiseBody(BaseModel):
+    promised_date:   date
+    promised_amount: float
+    notes:           Optional[str] = None
+
+@app.get("/api/v1/rental/ledger/{ledger_id}/promises")
+def get_promises(ledger_id: int, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        rows = conn.execute(sql("""
+            SELECT promise_id, ledger_id, promised_date, promised_amount, notes, created_at
+            FROM rental.payment_promises
+            WHERE ledger_id = :ledger_id
+            ORDER BY promised_date
+        """), {"ledger_id": ledger_id}).mappings().all()
+    return [dict(r) for r in rows]
+
+@app.post("/api/v1/rental/ledger/{ledger_id}/promises", status_code=201)
+def add_promise(ledger_id: int, body: PromiseBody, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        result = conn.execute(sql("""
+            INSERT INTO rental.payment_promises (ledger_id, promised_date, promised_amount, notes, org_id)
+            VALUES (:ledger_id, :promised_date, :promised_amount, :notes, :org_id)
+            RETURNING promise_id
+        """), {"ledger_id": ledger_id, **body.model_dump(), "org_id": org_id})
+        pid = result.fetchone()[0]
+        conn.execute(sql(
+            "UPDATE rental.rent_ledger SET status = 'promised' WHERE ledger_id = :id"
+        ), {"id": ledger_id})
+        conn.commit()
+    return {"promise_id": pid}
+
+@app.delete("/api/v1/rental/promises/{promise_id}", status_code=204)
+def delete_promise(promise_id: int, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        row = conn.execute(sql(
+            "SELECT ledger_id FROM rental.payment_promises WHERE promise_id = :id"
+        ), {"id": promise_id}).fetchone()
+        if row:
+            ledger_id = row[0]
+            conn.execute(sql("DELETE FROM rental.payment_promises WHERE promise_id = :id"), {"id": promise_id})
+            remaining = conn.execute(sql(
+                "SELECT COUNT(*) FROM rental.payment_promises WHERE ledger_id = :id"
+            ), {"id": ledger_id}).scalar()
+            if remaining == 0:
+                conn.execute(sql("""
+                    UPDATE rental.rent_ledger SET status = 'pending'
+                    WHERE ledger_id = :id AND status = 'promised'
+                """), {"id": ledger_id})
+            conn.commit()
+
+
+# ─── Rent Adjustments ─────────────────────────────────────────────────────────
+
+class AdjustmentBody(BaseModel):
+    amount: float   # negative = discount, positive = surcharge
+    reason: str
+
+@app.get("/api/v1/rental/ledger/{ledger_id}/adjustments")
+def get_adjustments(ledger_id: int, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        rows = conn.execute(sql("""
+            SELECT adjustment_id, ledger_id, amount, reason, created_at
+            FROM rental.rent_adjustments
+            WHERE ledger_id = :ledger_id
+            ORDER BY created_at
+        """), {"ledger_id": ledger_id}).mappings().all()
+    return [dict(r) for r in rows]
+
+@app.post("/api/v1/rental/ledger/{ledger_id}/adjustments", status_code=201)
+def add_adjustment(ledger_id: int, body: AdjustmentBody, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        result = conn.execute(sql("""
+            INSERT INTO rental.rent_adjustments (ledger_id, amount, reason, org_id)
+            VALUES (:ledger_id, :amount, :reason, :org_id)
+            RETURNING adjustment_id
+        """), {"ledger_id": ledger_id, "amount": body.amount, "reason": body.reason, "org_id": org_id})
+        adj_id = result.fetchone()[0]
+        conn.commit()
+    return {"adjustment_id": adj_id}
+
+@app.delete("/api/v1/rental/adjustments/{adjustment_id}", status_code=204)
+def delete_adjustment(adjustment_id: int, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        conn.execute(sql("DELETE FROM rental.rent_adjustments WHERE adjustment_id = :id"), {"id": adjustment_id})
         conn.commit()

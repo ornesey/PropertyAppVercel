@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
-import type { RentRollRow, PaymentMethod, Transaction } from "@/types/payment";
+import type { RentRollRow, PaymentMethod, Transaction, Promise as PayPromise, Adjustment } from "@/types/payment";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -104,32 +104,62 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
   onChanged: () => void;
 }) {
   const [open, setOpen]           = useState(false);
-  const [activeTab, setActiveTab] = useState<"pay" | "promise" | "history">("pay");
+  const [activeTab, setActiveTab] = useState<"pay" | "promise" | "adjust" | "history">("pay");
   const [showHistory, setShowHistory] = useState(false);
 
-  // Pay form
-  const obligation = Number(row.monthly_obligation);
-  const paid       = Number(row.amount_paid ?? 0);
-  const remaining  = Math.max(0, obligation - paid);
+  // Derived amounts
+  const obligation      = Number(row.monthly_obligation);
+  const paid            = Number(row.amount_paid ?? 0);
+  const adjustTotal     = Number(row.adjustment_total ?? 0);
+  const netDue          = (row.amount_due != null ? Number(row.amount_due) : obligation) + adjustTotal;
+  const remaining       = Math.max(0, netDue - paid);
 
   const defaultMethod = methods.find((m) => m.label.toLowerCase().includes("transfer"))?.code ?? methods[0]?.code ?? "";
 
+  // Pay form
   const [payAmt, setPayAmt]       = useState(String(remaining));
   const [payDate, setPayDate]     = useState(today);
   const [payMethod, setPayMethod] = useState(defaultMethod);
   const [payNotes, setPayNotes]   = useState("");
   const [paying, setPaying]       = useState(false);
 
-  // Promise form
-  const [prDate, setPrDate]   = useState(today);
-  const [prAmt, setPrAmt]     = useState(String(obligation));
+  // Promises
+  const [promises, setPromises]   = useState<PayPromise[] | null>(null);
+  const [prDate, setPrDate]       = useState(today);
+  const [prAmt, setPrAmt]         = useState(String(obligation));
+  const [prNotes, setPrNotes]     = useState("");
   const [promising, setPromising] = useState(false);
+
+  // Adjustments
+  const [adjustments, setAdjustments] = useState<Adjustment[] | null>(null);
+  const [adjAmt, setAdjAmt]           = useState("");
+  const [adjReason, setAdjReason]     = useState("");
+  const [addingAdj, setAddingAdj]     = useState(false);
 
   const status: string = row.payment_status ?? "not_generated";
   const icon    = STATUS_ICON[status] ?? "⬜";
   const style   = STATUS_STYLE[status] ?? STATUS_STYLE.not_generated;
   const isPast  = selMonth < currentMonth;
   const isLate  = ["late", "pending"].includes(status) && isPast && !!row.ledger_id;
+
+  async function loadPromises() {
+    if (!row.ledger_id) return;
+    const data = await api<PayPromise[]>("GET", `/api/v1/rental/ledger/${row.ledger_id}/promises`);
+    setPromises(data);
+  }
+
+  async function loadAdjustments() {
+    if (!row.ledger_id) return;
+    const data = await api<Adjustment[]>("GET", `/api/v1/rental/ledger/${row.ledger_id}/adjustments`);
+    setAdjustments(data);
+  }
+
+  function switchTab(t: typeof activeTab) {
+    setActiveTab(t);
+    if (t === "history") setShowHistory(true);
+    if (t === "promise" && promises === null) loadPromises();
+    if (t === "adjust" && adjustments === null) loadAdjustments();
+  }
 
   async function recordPayment(e: React.FormEvent) {
     e.preventDefault();
@@ -145,18 +175,48 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
     onChanged();
   }
 
-  async function recordPromise(e: React.FormEvent) {
+  async function addPromise(e: React.FormEvent) {
     e.preventDefault();
     if (!row.ledger_id) return;
     setPromising(true);
-    await api("PATCH", `/api/v1/rental/ledger/${row.ledger_id}`, {
-      status: "promised",
+    await api("POST", `/api/v1/rental/ledger/${row.ledger_id}/promises`, {
       promised_date: prDate,
       promised_amount: Number(prAmt),
+      notes: prNotes || null,
     });
     setPromising(false);
+    setPrNotes("");
+    await loadPromises();
     onChanged();
   }
+
+  async function deletePromise(promiseId: number) {
+    await api("DELETE", `/api/v1/rental/promises/${promiseId}`);
+    await loadPromises();
+    onChanged();
+  }
+
+  async function addAdjustment(e: React.FormEvent) {
+    e.preventDefault();
+    if (!row.ledger_id || !adjAmt || !adjReason.trim()) return;
+    setAddingAdj(true);
+    await api("POST", `/api/v1/rental/ledger/${row.ledger_id}/adjustments`, {
+      amount: Number(adjAmt),
+      reason: adjReason.trim(),
+    });
+    setAddingAdj(false);
+    setAdjAmt(""); setAdjReason("");
+    await loadAdjustments();
+    onChanged();
+  }
+
+  async function deleteAdjustment(adjId: number) {
+    await api("DELETE", `/api/v1/rental/adjustments/${adjId}`);
+    await loadAdjustments();
+    onChanged();
+  }
+
+  const hasAdjustments = adjustTotal !== 0;
 
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
@@ -171,7 +231,14 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
           </div>
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          <span className="text-sm text-gray-600">{fmt(row.monthly_obligation)}/mo</span>
+          {hasAdjustments ? (
+            <span className="text-sm text-gray-600">
+              <span className="line-through text-gray-400 text-xs mr-1">{fmt(row.monthly_obligation)}</span>
+              {fmt(netDue)}/mo
+            </span>
+          ) : (
+            <span className="text-sm text-gray-600">{fmt(row.monthly_obligation)}/mo</span>
+          )}
           {row.amount_paid != null && (
             <span className="text-xs text-gray-400">paid {fmt(row.amount_paid)}</span>
           )}
@@ -194,41 +261,44 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
           {status === "partial" && (
             <div className="bg-orange-50 border border-orange-100 rounded-lg px-3 py-2 text-sm text-orange-700">
               🟠 Partial — {fmt(row.amount_paid)} paid, <strong>{fmt(remaining)}</strong> remaining
+              {hasAdjustments && <span className="ml-2 text-xs">(net of adjustments)</span>}
             </div>
           )}
           {status === "promised" && (
             <div className="bg-yellow-50 border border-yellow-100 rounded-lg px-3 py-2 text-sm text-yellow-700">
-              🟡 Promised {fmt(row.promised_amount ?? obligation)} by {row.promised_date ?? "?"}
+              🟡 Promised — see Promise tab for schedule
             </div>
           )}
           {isLate && status !== "paid" && (
             <div className="bg-red-50 border border-red-100 rounded-lg px-3 py-2 text-sm text-red-700">
-              🔴 LATE — {fmt(obligation)} was due {selMonth}-01
+              🔴 LATE — {fmt(netDue)} was due {selMonth}-01
             </div>
           )}
           {!row.ledger_id && (
             <p className="text-xs text-gray-400">No payment entry for {selMonth} yet. Click ⚡ Generate above.</p>
           )}
 
-          {/* Action tabs — only when there's a ledger row and not fully paid */}
+          {/* Action tabs */}
           {row.ledger_id && status !== "paid" && (
             <div>
               <div className="flex gap-1 border-b border-gray-100 mb-3">
-                {(["pay", "promise", "history"] as const).map((t) => (
-                  <button key={t} onClick={() => { setActiveTab(t); if (t === "history") setShowHistory(true); }}
+                {(["pay", "promise", "adjust", "history"] as const).map((t) => (
+                  <button key={t} onClick={() => switchTab(t)}
                     className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                       activeTab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-400 hover:text-gray-600"
                     }`}>
-                    {t === "pay" ? "Record Payment" : t === "promise" ? "Mark Promised" : "History"}
+                    {t === "pay" ? "Record Payment" : t === "promise" ? "Promises" : t === "adjust" ? "Adjustments" : "History"}
                   </button>
                 ))}
               </div>
 
+              {/* Pay tab */}
               {activeTab === "pay" && (
                 <form onSubmit={recordPayment} className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {paid > 0 && (
                     <p className="col-span-full text-xs text-gray-400">
                       Already collected: <strong>{fmt(paid)}</strong> — Remaining: <strong>{fmt(remaining)}</strong>
+                      {hasAdjustments && " (net of adjustments)"}
                     </p>
                   )}
                   <Input label="Amount ($)" value={payAmt} onChange={setPayAmt} type="number" min="0.01" step="0.01" />
@@ -245,17 +315,87 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
                 </form>
               )}
 
+              {/* Promises tab */}
               {activeTab === "promise" && (
-                <form onSubmit={recordPromise} className="grid grid-cols-2 gap-3">
-                  <Input label="Promised by" value={prDate} onChange={setPrDate} type="date" />
-                  <Input label="Amount ($)" value={prAmt} onChange={setPrAmt} type="number" min="0" />
-                  <div className="col-span-full">
-                    <button type="submit" disabled={promising}
-                      className="px-4 py-1.5 bg-yellow-500 text-white text-xs rounded-lg hover:bg-yellow-600 disabled:opacity-50">
-                      {promising ? "Saving…" : "🟡 Mark as Promised"}
-                    </button>
-                  </div>
-                </form>
+                <div className="space-y-3">
+                  {promises === null ? (
+                    <p className="text-xs text-gray-400 animate-pulse">Loading…</p>
+                  ) : promises.length === 0 ? (
+                    <p className="text-xs text-gray-400">No promises recorded yet.</p>
+                  ) : (
+                    <div className="space-y-1">
+                      <p className="text-xs text-gray-400 mb-1">
+                        Total promised: <strong>${promises.reduce((s, p) => s + Number(p.promised_amount), 0).toLocaleString()}</strong>
+                      </p>
+                      {promises.map((p) => (
+                        <div key={p.promise_id} className="flex items-center justify-between gap-3 text-xs text-gray-700 bg-yellow-50 rounded-lg px-3 py-1.5">
+                          <div className="flex items-center gap-3">
+                            <span className="font-medium">{p.promised_date}</span>
+                            <span className="font-semibold text-yellow-700">${Number(p.promised_amount).toLocaleString()}</span>
+                            {p.notes && <span className="text-gray-400 italic">{p.notes}</span>}
+                          </div>
+                          <button onClick={() => deletePromise(p.promise_id)} className="text-red-400 hover:text-red-600">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <form onSubmit={addPromise} className="grid grid-cols-3 gap-2 pt-2 border-t border-gray-100">
+                    <Input label="By date" value={prDate} onChange={setPrDate} type="date" />
+                    <Input label="Amount ($)" value={prAmt} onChange={setPrAmt} type="number" min="0" />
+                    <Input label="Notes" value={prNotes} onChange={setPrNotes} />
+                    <div className="col-span-full">
+                      <button type="submit" disabled={promising}
+                        className="px-4 py-1.5 bg-yellow-500 text-white text-xs rounded-lg hover:bg-yellow-600 disabled:opacity-50">
+                        {promising ? "Adding…" : "🟡 Add Promise"}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* Adjustments tab */}
+              {activeTab === "adjust" && (
+                <div className="space-y-3">
+                  {adjustments === null ? (
+                    <p className="text-xs text-gray-400 animate-pulse">Loading…</p>
+                  ) : adjustments.length === 0 ? (
+                    <p className="text-xs text-gray-400">No adjustments yet.</p>
+                  ) : (
+                    <div className="space-y-1">
+                      <p className="text-xs text-gray-400 mb-1">
+                        Net due: <strong>{fmt(netDue)}</strong>
+                        {adjustTotal < 0 && <span className="text-green-600 ml-1">(discount {fmt(adjustTotal)} applied)</span>}
+                        {adjustTotal > 0 && <span className="text-orange-600 ml-1">(surcharge +{fmt(adjustTotal)} applied)</span>}
+                      </p>
+                      {adjustments.map((a) => (
+                        <div key={a.adjustment_id} className="flex items-center justify-between gap-3 text-xs text-gray-700 bg-gray-50 rounded-lg px-3 py-1.5">
+                          <div className="flex items-center gap-3">
+                            <span className={`font-semibold ${a.amount < 0 ? "text-green-600" : "text-orange-600"}`}>
+                              {a.amount < 0 ? "-" : "+"}{fmt(Math.abs(a.amount))}
+                            </span>
+                            <span className="text-gray-600">{a.reason}</span>
+                          </div>
+                          <button onClick={() => deleteAdjustment(a.adjustment_id)} className="text-red-400 hover:text-red-600">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <form onSubmit={addAdjustment} className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-100">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-medium text-gray-500">Amount (negative = discount)</label>
+                      <input type="number" step="0.01" value={adjAmt} onChange={(e) => setAdjAmt(e.target.value)}
+                        placeholder="-100 or +50"
+                        className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                    </div>
+                    <Input label="Reason" value={adjReason} onChange={setAdjReason} />
+                    <div className="col-span-full">
+                      <button type="submit" disabled={addingAdj}
+                        className="px-4 py-1.5 bg-gray-700 text-white text-xs rounded-lg hover:bg-gray-800 disabled:opacity-50">
+                        {addingAdj ? "Adding…" : "Apply Adjustment"}
+                      </button>
+                    </div>
+                  </form>
+                </div>
               )}
 
               {activeTab === "history" && showHistory && (
@@ -264,7 +404,7 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
             </div>
           )}
 
-          {/* History tab for paid entries */}
+          {/* History for paid entries */}
           {row.ledger_id && status === "paid" && (
             <div>
               <button onClick={() => setShowHistory((s) => !s)}
