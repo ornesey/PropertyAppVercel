@@ -77,8 +77,11 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:8501",
+        "https://property-app-azure.vercel.app",
+        "https://property-backend-taupe.vercel.app",
         "https://sr-repo-git-619970836237.northamerica-northeast2.run.app",
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
