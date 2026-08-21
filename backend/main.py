@@ -81,7 +81,6 @@ app.add_middleware(
         "https://property-backend-taupe.vercel.app",
         "https://sr-repo-git-619970836237.northamerica-northeast2.run.app",
     ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2008,6 +2007,7 @@ class FixedCostBody(BaseModel):
     amount:          float
     frequency:       str            = "monthly"
     start_date:      date
+    day_of_month:    int            = 1
     notes:           Optional[str]  = None
 
 class FixedCostUpdate(BaseModel):
@@ -2018,6 +2018,7 @@ class FixedCostUpdate(BaseModel):
     amount:          Optional[float] = None
     frequency:       Optional[str]   = None
     start_date:      Optional[date]  = None
+    day_of_month:    Optional[int]   = None
     notes:           Optional[str]   = None
     active:          Optional[bool]  = None
 
@@ -2026,7 +2027,7 @@ def get_fixed_costs(org_id: int = Depends(get_org_id)):
     with get_connection_for_org(org_id) as conn:
         rows = conn.execute(sql("""
             SELECT fc.fixed_cost_id, fc.name, fc.amount, fc.frequency, fc.start_date,
-                   fc.notes, fc.active,
+                   fc.day_of_month, fc.notes, fc.active,
                    fc.property_id, p.address AS property_address,
                    fc.expense_type_id, et.name AS expense_type_name,
                    fc.vendor_id, v.company_name AS vendor_name
@@ -2044,9 +2045,9 @@ def create_fixed_cost(body: FixedCostBody, org_id: int = Depends(get_org_id)):
     with get_connection_for_org(org_id) as conn:
         result = conn.execute(sql("""
             INSERT INTO rental.fixed_costs
-                (name, expense_type_id, property_id, vendor_id, amount, frequency, start_date, notes, org_id)
+                (name, expense_type_id, property_id, vendor_id, amount, frequency, start_date, day_of_month, notes, org_id)
             VALUES
-                (:name, :expense_type_id, :property_id, :vendor_id, :amount, :frequency, :start_date, :notes, :org_id)
+                (:name, :expense_type_id, :property_id, :vendor_id, :amount, :frequency, :start_date, :day_of_month, :notes, :org_id)
             RETURNING fixed_cost_id
         """), {**body.model_dump(), "org_id": org_id})
         fid = result.fetchone()[0]
@@ -2073,59 +2074,55 @@ def delete_fixed_cost(fixed_cost_id: int, org_id: int = Depends(get_org_id)):
                      {"id": fixed_cost_id, "org_id": org_id})
         conn.commit()
 
-@app.post("/api/v1/rental/fixed-costs/generate")
-def generate_fixed_costs(month: str, org_id: int = Depends(get_org_id)):
-    """Generate expense rows for all active fixed costs for the given month (YYYY-MM).
-    Skips any that already have an expense entry for that month to prevent duplicates."""
-    try:
-        month_date = date.fromisoformat(month + "-01")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+def _fixed_expense_date(month_date: date, day_of_month: int) -> date:
+    """Return the correct expense date for a fixed cost, capped to the last day of the month."""
+    import calendar as cal
+    last_day = cal.monthrange(month_date.year, month_date.month)[1]
+    return date(month_date.year, month_date.month, min(max(1, day_of_month), last_day))
 
-    with get_connection_for_org(org_id) as conn:
-        costs = conn.execute(sql("""
-            SELECT fc.fixed_cost_id, fc.name, fc.expense_type_id, fc.property_id,
-                   fc.vendor_id, fc.amount, fc.frequency, fc.start_date
-            FROM rental.fixed_costs fc
-            WHERE fc.org_id = :org_id AND fc.active = TRUE
-        """), {"org_id": org_id}).mappings().all()
 
-        created = 0
-        for fc in costs:
-            start = fc["start_date"]
-            if isinstance(start, str):
-                start = date.fromisoformat(start)
+def _process_fixed_costs_month(conn, month_date: date, org_id: int, dry_run: bool = False) -> int:
+    """Core logic: count (dry_run=True) or insert missing fixed-cost expenses for one month."""
+    costs = conn.execute(sql("""
+        SELECT fc.name, fc.expense_type_id, fc.property_id,
+               fc.vendor_id, fc.amount, fc.frequency, fc.start_date,
+               COALESCE(fc.day_of_month, 1) AS day_of_month
+        FROM rental.fixed_costs fc
+        WHERE fc.org_id = :org_id AND fc.active = TRUE
+    """), {"org_id": org_id}).mappings().all()
 
-            # Annual costs: only generate in their start month
-            if fc["frequency"] == "annual" and start.month != month_date.month:
-                continue
-            # Skip if cost started after this month
-            if start > month_date.replace(day=28):
-                continue
+    count = 0
+    for fc in costs:
+        start = fc["start_date"]
+        if isinstance(start, str):
+            start = date.fromisoformat(start)
+        if fc["frequency"] == "annual" and start.month != month_date.month:
+            continue
+        if start > month_date.replace(day=28):
+            continue
 
-            expense_date = month_date  # 1st of the month
+        existing = conn.execute(sql("""
+            SELECT 1 FROM rental.expenses
+            WHERE org_id = :org_id
+              AND property_id IS NOT DISTINCT FROM :property_id
+              AND expense_type_id IS NOT DISTINCT FROM :expense_type_id
+              AND notes = :notes
+              AND EXTRACT(YEAR  FROM expense_date) = :yr
+              AND EXTRACT(MONTH FROM expense_date) = :mo
+        """), {
+            "org_id":          org_id,
+            "property_id":     fc["property_id"],
+            "expense_type_id": fc["expense_type_id"],
+            "notes":           f"[Fixed] {fc['name']}",
+            "yr":              month_date.year,
+            "mo":              month_date.month,
+        }).fetchone()
 
-            # Check for duplicate
-            existing = conn.execute(sql("""
-                SELECT 1 FROM rental.expenses
-                WHERE org_id = :org_id
-                  AND property_id IS NOT DISTINCT FROM :property_id
-                  AND expense_type_id IS NOT DISTINCT FROM :expense_type_id
-                  AND notes = :notes
-                  AND EXTRACT(YEAR  FROM expense_date) = :yr
-                  AND EXTRACT(MONTH FROM expense_date) = :mo
-            """), {
-                "org_id": org_id,
-                "property_id": fc["property_id"],
-                "expense_type_id": fc["expense_type_id"],
-                "notes": f"[Fixed] {fc['name']}",
-                "yr": month_date.year,
-                "mo": month_date.month,
-            }).fetchone()
+        if existing:
+            continue
 
-            if existing:
-                continue
-
+        if not dry_run:
+            expense_date = _fixed_expense_date(month_date, int(fc["day_of_month"]))
             conn.execute(sql("""
                 INSERT INTO rental.expenses
                     (property_id, expense_date, expense_type_id, vendor_id, amount, notes, org_id)
@@ -2140,10 +2137,116 @@ def generate_fixed_costs(month: str, org_id: int = Depends(get_org_id)):
                 "notes":           f"[Fixed] {fc['name']}",
                 "org_id":          org_id,
             })
-            created += 1
+        count += 1
+    return count
 
+
+@app.post("/api/v1/rental/fixed-costs/generate")
+def generate_fixed_costs(month: str, org_id: int = Depends(get_org_id)):
+    """Generate expense rows for all active fixed costs for the given month (YYYY-MM)."""
+    try:
+        month_date = date.fromisoformat(month + "-01")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+    if month_date > date.today():
+        raise HTTPException(status_code=400, detail="Cannot generate expenses for a future month")
+    with get_connection_for_org(org_id) as conn:
+        created = _process_fixed_costs_month(conn, month_date, org_id)
         conn.commit()
     return {"created": created, "month": month}
+
+
+def _preview_fixed_costs_details(conn, year: int, months: list, org_id: int) -> dict:
+    """Return a detailed breakdown of which fixed costs are missing for the given months."""
+    costs = conn.execute(sql("""
+        SELECT fc.name, fc.expense_type_id, fc.property_id,
+               fc.amount, fc.frequency, fc.start_date,
+               COALESCE(fc.day_of_month, 1) AS day_of_month,
+               COALESCE(p.address, 'No property') AS property_address
+        FROM rental.fixed_costs fc
+        LEFT JOIN rental.properties p ON p.property_id = fc.property_id
+        WHERE fc.org_id = :org_id AND fc.active = TRUE
+        ORDER BY property_address, fc.name
+    """), {"org_id": org_id}).mappings().all()
+
+    groups: dict = {}
+    total = 0
+
+    for fc in costs:
+        start = fc["start_date"]
+        if isinstance(start, str):
+            start = date.fromisoformat(start)
+
+        missing_months = []
+        for mon in months:
+            month_date = date(year, mon, 1)
+            if fc["frequency"] == "annual" and start.month != month_date.month:
+                continue
+            if start > month_date.replace(day=28):
+                continue
+            existing = conn.execute(sql("""
+                SELECT 1 FROM rental.expenses
+                WHERE org_id = :org_id
+                  AND property_id IS NOT DISTINCT FROM :property_id
+                  AND expense_type_id IS NOT DISTINCT FROM :expense_type_id
+                  AND notes = :notes
+                  AND EXTRACT(YEAR  FROM expense_date) = :yr
+                  AND EXTRACT(MONTH FROM expense_date) = :mo
+            """), {
+                "org_id":          org_id,
+                "property_id":     fc["property_id"],
+                "expense_type_id": fc["expense_type_id"],
+                "notes":           f"[Fixed] {fc['name']}",
+                "yr": year, "mo": mon,
+            }).fetchone()
+            if not existing:
+                missing_months.append(mon)
+
+        if missing_months:
+            key = (fc["name"], fc["property_id"])
+            if key not in groups:
+                groups[key] = {
+                    "name":     fc["name"],
+                    "property": fc["property_address"],
+                    "amount":   float(fc["amount"]),
+                    "months":   [],
+                }
+            groups[key]["months"].extend(missing_months)
+            total += len(missing_months)
+
+    items = list(groups.values())
+    return {"would_create": total, "items": items}
+
+
+def _cap_to_past(year: int, months: list) -> list:
+    """Filter out future months — only generate for months that have already started."""
+    today = date.today()
+    return [m for m in months if date(year, m, 1) <= today]
+
+
+@app.get("/api/v1/rental/fixed-costs/preview-year")
+def preview_year_fixed_costs(year: int, month: Optional[int] = None,
+                              org_id: int = Depends(get_org_id)):
+    """Count and detail missing fixed-cost entries. month=None → whole year; month=N → just that month.
+    Never includes future months."""
+    months = _cap_to_past(year, [month] if month else list(range(1, 13)))
+    with get_connection_for_org(org_id) as conn:
+        result = _preview_fixed_costs_details(conn, year, months, org_id)
+    return {**result, "year": year, "month": month}
+
+
+@app.post("/api/v1/rental/fixed-costs/generate-year")
+def generate_year_fixed_costs(year: int, month: Optional[int] = None,
+                               org_id: int = Depends(get_org_id)):
+    """Generate missing fixed-cost entries. month=None → whole year; month=N → just that month.
+    Never inserts entries for future months."""
+    months = _cap_to_past(year, [month] if month else list(range(1, 13)))
+    total = 0
+    with get_connection_for_org(org_id) as conn:
+        for mon in months:
+            total += _process_fixed_costs_month(conn, date(year, mon, 1), org_id, dry_run=False)
+        conn.commit()
+    return {"created": total, "year": year, "month": month}
 
 
 @app.get("/api/v1/rental/expenses/summary")
@@ -3005,3 +3108,475 @@ def delete_adjustment(adjustment_id: int, org_id: int = Depends(get_org_id)):
     with get_connection_for_org(org_id) as conn:
         conn.execute(sql("DELETE FROM rental.rent_adjustments WHERE adjustment_id = :id"), {"id": adjustment_id})
         conn.commit()
+
+
+# ─── Mortgages ────────────────────────────────────────────────────────────────
+
+class MortgageBody(BaseModel):
+    property_id:     int
+    lender:          Optional[str]   = None
+    monthly_payment: float
+    term_start:      date
+    term_end:        Optional[date]  = None
+    interest_rate:   Optional[float] = None
+    notes:           Optional[str]   = None
+
+class MortgageUpdate(BaseModel):
+    lender:          Optional[str]   = None
+    monthly_payment: Optional[float] = None
+    term_start:      Optional[date]  = None
+    term_end:        Optional[date]  = None
+    interest_rate:   Optional[float] = None
+    notes:           Optional[str]   = None
+
+@app.get("/api/v1/rental/mortgages")
+def get_mortgages(property_id: Optional[int] = None, org_id: int = Depends(get_org_id)):
+    filters, params = ["m.org_id = :org_id"], {"org_id": org_id}
+    if property_id:
+        filters.append("m.property_id = :property_id")
+        params["property_id"] = property_id
+    where = "WHERE " + " AND ".join(filters)
+    with get_connection_for_org(org_id) as conn:
+        rows = conn.execute(sql(f"""
+            SELECT m.mortgage_id, m.property_id, m.lender, m.monthly_payment,
+                   m.term_start, m.term_end, m.interest_rate, m.notes, m.created_at,
+                   p.address AS property_address
+            FROM rental.mortgages m
+            JOIN rental.properties p ON p.property_id = m.property_id
+            {where}
+            ORDER BY p.address, m.term_start DESC
+        """), params).mappings().all()
+    return [dict(r) for r in rows]
+
+@app.post("/api/v1/rental/mortgages", status_code=201)
+def create_mortgage(body: MortgageBody, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        result = conn.execute(sql("""
+            INSERT INTO rental.mortgages
+                (property_id, lender, monthly_payment, term_start, term_end, interest_rate, notes, org_id)
+            VALUES
+                (:property_id, :lender, :monthly_payment, :term_start, :term_end, :interest_rate, :notes, :org_id)
+            RETURNING mortgage_id
+        """), {**body.model_dump(), "org_id": org_id})
+        mid = result.fetchone()[0]
+        conn.commit()
+    return {"mortgage_id": mid}
+
+@app.patch("/api/v1/rental/mortgages/{mortgage_id}")
+def update_mortgage(mortgage_id: int, body: MortgageUpdate, org_id: int = Depends(get_org_id)):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    set_clause = ", ".join(f"{k} = :{k}" for k in fields)
+    fields["mortgage_id"] = mortgage_id
+    with get_connection_for_org(org_id) as conn:
+        conn.execute(sql(f"UPDATE rental.mortgages SET {set_clause} WHERE mortgage_id = :mortgage_id"), fields)
+        conn.commit()
+    return {"updated": mortgage_id}
+
+@app.delete("/api/v1/rental/mortgages/{mortgage_id}", status_code=204)
+def delete_mortgage(mortgage_id: int, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        conn.execute(sql("DELETE FROM rental.mortgages WHERE mortgage_id = :id"), {"id": mortgage_id})
+        conn.commit()
+
+
+# ─── Cash Flow Estimates ──────────────────────────────────────────────────────
+
+class EstimateBody(BaseModel):
+    property_id:     Optional[int]  = None
+    expense_type_id: int
+    year:            int
+    month:           Optional[int]  = None
+    amount:          float
+    notes:           Optional[str]  = None
+
+class EstimateCalculate(BaseModel):
+    property_id:     Optional[int] = None
+    expense_type_id: int
+    year:            int
+    month:           Optional[int] = None
+
+def _find_estimate(conn, property_id, expense_type_id, year, month, org_id):
+    return conn.execute(sql("""
+        SELECT estimate_id, amount, source FROM rental.cash_flow_estimates
+        WHERE COALESCE(property_id, -1) = COALESCE(:property_id, -1)
+          AND expense_type_id = :expense_type_id
+          AND year = :year
+          AND COALESCE(month, -1) = COALESCE(:month, -1)
+          AND org_id = :org_id
+    """), {"property_id": property_id, "expense_type_id": expense_type_id,
+           "year": year, "month": month, "org_id": org_id}).mappings().fetchone()
+
+@app.post("/api/v1/rental/cashflow/estimates", status_code=201)
+def save_estimate(body: EstimateBody, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        existing = _find_estimate(conn, body.property_id, body.expense_type_id,
+                                  body.year, body.month, org_id)
+        if existing:
+            conn.execute(sql("""
+                UPDATE rental.cash_flow_estimates
+                SET amount = :amount, source = 'manual', notes = :notes
+                WHERE estimate_id = :id
+            """), {"amount": body.amount, "notes": body.notes, "id": existing["estimate_id"]})
+            eid = existing["estimate_id"]
+        else:
+            result = conn.execute(sql("""
+                INSERT INTO rental.cash_flow_estimates
+                    (property_id, expense_type_id, year, month, amount, source, notes, org_id)
+                VALUES (:property_id, :expense_type_id, :year, :month, :amount, 'manual', :notes, :org_id)
+                RETURNING estimate_id
+            """), {**body.model_dump(), "org_id": org_id})
+            eid = result.fetchone()[0]
+        conn.commit()
+    return {"estimate_id": eid}
+
+@app.delete("/api/v1/rental/cashflow/estimates/{estimate_id}", status_code=204)
+def delete_estimate(estimate_id: int, org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        conn.execute(sql("DELETE FROM rental.cash_flow_estimates WHERE estimate_id = :id"), {"id": estimate_id})
+        conn.commit()
+
+@app.post("/api/v1/rental/cashflow/estimates/calculate")
+def calculate_estimate(body: EstimateCalculate, org_id: int = Depends(get_org_id)):
+    """Compute 12-month average from actual expenses and save as a calculated estimate."""
+    if body.month:
+        period_start = date(body.year, body.month, 1)
+    else:
+        period_start = date(body.year, 1, 1)
+    twelve_months_ago = date(period_start.year - 1, period_start.month, period_start.day)
+
+    prop_filter = "AND e.property_id = :property_id" if body.property_id else "AND e.property_id IS NULL"
+    params: dict = {
+        "expense_type_id": body.expense_type_id,
+        "tma": twelve_months_ago,
+        "ps":  period_start,
+        "org_id": org_id,
+    }
+    if body.property_id:
+        params["property_id"] = body.property_id
+
+    with get_connection_for_org(org_id) as conn:
+        hist = conn.execute(sql(f"""
+            SELECT COUNT(*) AS months_count, AVG(monthly_total) AS avg_amount
+            FROM (
+                SELECT DATE_TRUNC('month', e.expense_date) AS mo,
+                       SUM(e.amount) AS monthly_total
+                FROM rental.expenses e
+                WHERE e.expense_type_id = :expense_type_id
+                  AND e.org_id = :org_id
+                  AND e.expense_date >= :tma
+                  AND e.expense_date < :ps
+                  {prop_filter}
+                GROUP BY DATE_TRUNC('month', e.expense_date)
+            ) monthly
+        """), params).mappings().fetchone()
+
+        if not hist or int(hist["months_count"]) < 2:
+            raise HTTPException(status_code=400,
+                detail="Not enough historical data — need at least 2 months of history to calculate")
+
+        avg = round(float(hist["avg_amount"]), 2)
+
+        existing = _find_estimate(conn, body.property_id, body.expense_type_id,
+                                  body.year, body.month, org_id)
+        if existing:
+            conn.execute(sql("""
+                UPDATE rental.cash_flow_estimates SET amount = :amount, source = 'calculated'
+                WHERE estimate_id = :id
+            """), {"amount": avg, "id": existing["estimate_id"]})
+            eid = existing["estimate_id"]
+        else:
+            result = conn.execute(sql("""
+                INSERT INTO rental.cash_flow_estimates
+                    (property_id, expense_type_id, year, month, amount, source, org_id)
+                VALUES (:property_id, :expense_type_id, :year, :month, :amount, 'calculated', :org_id)
+                RETURNING estimate_id
+            """), {"property_id": body.property_id, "expense_type_id": body.expense_type_id,
+                   "year": body.year, "month": body.month, "amount": avg, "org_id": org_id})
+            eid = result.fetchone()[0]
+        conn.commit()
+
+    return {"estimate_id": eid, "amount": avg, "months_used": int(hist["months_count"])}
+
+
+# ─── Cash Flow Report ─────────────────────────────────────────────────────────
+
+@app.get("/api/v1/rental/cashflow")
+def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[int] = None,
+                 org_id: int = Depends(get_org_id)):
+    """Cash flow report: income vs expenses per property for a period."""
+    import calendar as cal
+
+    if month:
+        period_start = date(year, month, 1)
+        period_end   = date(year, month, cal.monthrange(year, month)[1])
+    else:
+        period_start = date(year, 1, 1)
+        period_end   = date(year, 12, 31)
+
+    twelve_months_ago = date(period_start.year - 1, period_start.month, period_start.day)
+
+    with get_connection_for_org(org_id) as conn:
+        prop_extra   = "AND p.property_id = :pid" if property_id else ""
+        base: dict   = {"org_id": org_id}
+        if property_id:
+            base["pid"] = property_id
+
+        # Properties
+        properties = conn.execute(sql(f"""
+            SELECT property_id, address FROM rental.properties
+            WHERE org_id = :org_id {prop_extra}
+            ORDER BY address
+        """), base).mappings().all()
+
+        # Income per property (collected = paid/partial; expected = all due entries)
+        income_rows = conn.execute(sql(f"""
+            SELECT p.property_id,
+                COALESCE(SUM(CASE WHEN rl.status IN ('paid','partial')
+                                  THEN rl.amount_paid ELSE 0 END), 0) AS income_collected,
+                COALESCE(SUM(rl.amount_due), 0) AS income_expected
+            FROM rental.properties p
+            LEFT JOIN rental.units u ON u.property_id = p.property_id
+            LEFT JOIN rental.rentable_spaces rs ON rs.unit_id = u.unit_id
+            LEFT JOIN rental.leases l ON l.space_id = rs.space_id
+            LEFT JOIN rental.rent_ledger rl
+                ON rl.lease_id = l.lease_id
+               AND rl.due_date BETWEEN :ps AND :pe
+            WHERE p.org_id = :org_id {prop_extra}
+            GROUP BY p.property_id
+        """), {**base, "ps": period_start, "pe": period_end}).mappings().all()
+        income_map = {r["property_id"]: dict(r) for r in income_rows}
+
+        # Actual operating expenses per property+type (excluding Mortgage Interest)
+        actual_rows = conn.execute(sql(f"""
+            SELECT e.property_id, e.expense_type_id,
+                   COALESCE(et.name, e.expense_type, 'Other') AS category,
+                   SUM(e.amount) AS amount
+            FROM rental.expenses e
+            LEFT JOIN rental.ref_expense_types et ON et.type_id = e.expense_type_id
+            WHERE e.org_id = :org_id
+              AND e.expense_date BETWEEN :ps AND :pe
+              AND e.property_id IS NOT NULL
+              AND COALESCE(et.name, e.expense_type, '') != 'Mortgage Interest'
+              {"AND e.property_id = :pid" if property_id else ""}
+            GROUP BY e.property_id, e.expense_type_id,
+                     COALESCE(et.name, e.expense_type, 'Other')
+        """), {**base, "ps": period_start, "pe": period_end}).mappings().all()
+
+        # Mortgage Interest tax reference (separate, not counted in operating expenses)
+        mi_rows = conn.execute(sql(f"""
+            SELECT e.property_id, COALESCE(SUM(e.amount), 0) AS total
+            FROM rental.expenses e
+            LEFT JOIN rental.ref_expense_types et ON et.type_id = e.expense_type_id
+            WHERE e.org_id = :org_id
+              AND e.expense_date BETWEEN :ps AND :pe
+              AND e.property_id IS NOT NULL
+              AND COALESCE(et.name, e.expense_type, '') = 'Mortgage Interest'
+              {"AND e.property_id = :pid" if property_id else ""}
+            GROUP BY e.property_id
+        """), {**base, "ps": period_start, "pe": period_end}).mappings().all()
+        mi_map = {r["property_id"]: float(r["total"]) for r in mi_rows}
+
+        # Active mortgages for the period
+        mortgage_rows = conn.execute(sql(f"""
+            SELECT m.property_id, m.monthly_payment, m.term_start, m.term_end
+            FROM rental.mortgages m
+            WHERE m.org_id = :org_id
+              AND m.term_start <= :pe
+              AND (m.term_end IS NULL OR m.term_end >= :ps)
+              {"AND m.property_id = :pid" if property_id else ""}
+        """), {**base, "ps": period_start, "pe": period_end}).mappings().all()
+
+        # Compute mortgage cash outflow per property
+        mortgage_by_prop: dict = {}
+        for m in mortgage_rows:
+            pid = m["property_id"]
+            if month:
+                payment = float(m["monthly_payment"])
+            else:
+                term_s = m["term_start"]
+                term_e = m["term_end"] if m["term_end"] else date(9999, 12, 31)
+                months_active = sum(
+                    1 for mo in range(1, 13)
+                    if term_s <= date(year, mo, cal.monthrange(year, mo)[1])
+                    and term_e >= date(year, mo, 1)
+                )
+                payment = float(m["monthly_payment"]) * months_active
+            mortgage_by_prop[pid] = mortgage_by_prop.get(pid, 0.0) + payment
+
+        # Stored estimates for the period
+        est_rows = conn.execute(sql(f"""
+            SELECT cfe.estimate_id, cfe.property_id, cfe.expense_type_id,
+                   et.name AS category, cfe.amount, cfe.source
+            FROM rental.cash_flow_estimates cfe
+            JOIN rental.ref_expense_types et ON et.type_id = cfe.expense_type_id
+            WHERE cfe.org_id = :org_id
+              AND cfe.year = :year
+              AND COALESCE(cfe.month, -1) = COALESCE(:month, -1)
+              AND cfe.property_id IS NOT NULL
+              {"AND cfe.property_id = :pid" if property_id else ""}
+        """), {**base, "year": year, "month": month}).mappings().all()
+
+        # 12-month historical averages (candidate auto-estimates) for types with no current data
+        hist_rows = conn.execute(sql(f"""
+            SELECT monthly.property_id, monthly.expense_type_id,
+                   COALESCE(et.name, 'Other') AS category,
+                   AVG(monthly.monthly_total) AS avg_amount
+            FROM (
+                SELECT e.property_id, e.expense_type_id,
+                       DATE_TRUNC('month', e.expense_date) AS mo,
+                       SUM(e.amount) AS monthly_total
+                FROM rental.expenses e
+                LEFT JOIN rental.ref_expense_types et2 ON et2.type_id = e.expense_type_id
+                WHERE e.org_id = :org_id
+                  AND e.expense_date >= :tma
+                  AND e.expense_date < :ps
+                  AND e.property_id IS NOT NULL
+                  AND e.expense_type_id IS NOT NULL
+                  AND COALESCE(et2.name, '') != 'Mortgage Interest'
+                  {"AND e.property_id = :pid" if property_id else ""}
+                GROUP BY e.property_id, e.expense_type_id,
+                         DATE_TRUNC('month', e.expense_date)
+            ) monthly
+            LEFT JOIN rental.ref_expense_types et ON et.type_id = monthly.expense_type_id
+            GROUP BY monthly.property_id, monthly.expense_type_id, et.name
+            HAVING COUNT(*) >= 2
+        """), {**base, "tma": twelve_months_ago, "ps": period_start}).mappings().all()
+
+        # Common expenses (no property)
+        common_actual_rows = conn.execute(sql("""
+            SELECT e.expense_type_id,
+                   COALESCE(et.name, e.expense_type, 'Other') AS category,
+                   SUM(e.amount) AS amount
+            FROM rental.expenses e
+            LEFT JOIN rental.ref_expense_types et ON et.type_id = e.expense_type_id
+            WHERE e.org_id = :org_id
+              AND e.expense_date BETWEEN :ps AND :pe
+              AND e.property_id IS NULL
+            GROUP BY e.expense_type_id, COALESCE(et.name, e.expense_type, 'Other')
+            ORDER BY category
+        """), {"org_id": org_id, "ps": period_start, "pe": period_end}).mappings().all()
+
+        common_est_rows = conn.execute(sql("""
+            SELECT cfe.estimate_id, cfe.expense_type_id,
+                   et.name AS category, cfe.amount, cfe.source
+            FROM rental.cash_flow_estimates cfe
+            JOIN rental.ref_expense_types et ON et.type_id = cfe.expense_type_id
+            WHERE cfe.org_id = :org_id
+              AND cfe.year = :year
+              AND COALESCE(cfe.month, -1) = COALESCE(:month, -1)
+              AND cfe.property_id IS NULL
+        """), {"org_id": org_id, "year": year, "month": month}).mappings().all()
+
+    # ── Merge per-property data in Python ──────────────────────────────────────
+
+    # Index actuals: property_id → {type_id → row}
+    actuals_by_prop: dict = {}
+    for r in actual_rows:
+        pid = r["property_id"]
+        actuals_by_prop.setdefault(pid, {})[r["expense_type_id"]] = {
+            "expense_type_id": r["expense_type_id"],
+            "category": r["category"],
+            "amount": float(r["amount"]),
+            "source": "actual",
+        }
+
+    # Index stored estimates
+    estimates_by_prop: dict = {}
+    for r in est_rows:
+        pid = r["property_id"]
+        estimates_by_prop.setdefault(pid, {})[r["expense_type_id"]] = {
+            "expense_type_id": r["expense_type_id"],
+            "category": r["category"],
+            "amount": float(r["amount"]),
+            "source": r["source"],
+        }
+
+    # Index 12-month averages (only used where no actual and no stored estimate)
+    hist_by_prop: dict = {}
+    for r in hist_rows:
+        pid = r["property_id"]
+        hist_by_prop.setdefault(pid, {})[r["expense_type_id"]] = {
+            "expense_type_id": r["expense_type_id"],
+            "category": r["category"],
+            "amount": round(float(r["avg_amount"]), 2),
+            "source": "calculated",
+        }
+
+    property_results = []
+    for prop in properties:
+        pid = prop["property_id"]
+        inc  = income_map.get(pid, {"income_collected": 0, "income_expected": 0})
+        mort = round(mortgage_by_prop.get(pid, 0.0), 2)
+        mi   = mi_map.get(pid, 0.0)
+
+        actuals   = actuals_by_prop.get(pid, {})
+        estimates = estimates_by_prop.get(pid, {})
+        hist      = hist_by_prop.get(pid, {})
+
+        all_type_ids = set(actuals) | set(estimates) | set(hist)
+
+        expenses = []
+        for tid in sorted(all_type_ids,
+                           key=lambda t: (actuals.get(t) or estimates.get(t) or hist.get(t) or {}).get("category", "")):
+            if tid in actuals:
+                expenses.append(actuals[tid])
+            elif tid in estimates:
+                expenses.append(estimates[tid])
+            else:
+                expenses.append(hist[tid])
+
+        total_op  = round(sum(e["amount"] for e in expenses), 2)
+        total_exp = round(total_op + mort, 2)
+        net       = round(float(inc["income_collected"]) - total_exp, 2)
+
+        property_results.append({
+            "property_id":               pid,
+            "address":                   prop["address"],
+            "income_collected":          float(inc["income_collected"]),
+            "income_expected":           float(inc["income_expected"]),
+            "mortgage_payment":          mort,
+            "expenses":                  expenses,
+            "total_operating_expenses":  total_op,
+            "total_expenses":            total_exp,
+            "net_cash_flow":             net,
+            "mortgage_interest_tax_ref": mi,
+        })
+
+    # Common expenses merge
+    common_actuals_map  = {r["expense_type_id"]: {"category": r["category"],
+                            "amount": float(r["amount"]), "source": "actual"}
+                           for r in common_actual_rows}
+    common_est_map      = {r["expense_type_id"]: {"category": r["category"],
+                            "amount": float(r["amount"]), "source": r["source"]}
+                           for r in common_est_rows}
+    all_common = set(common_actuals_map) | set(common_est_map)
+    common_expenses = sorted(
+        [common_actuals_map[t] if t in common_actuals_map else common_est_map[t]
+         for t in all_common],
+        key=lambda x: x["category"]
+    )
+    common_total = round(sum(e["amount"] for e in common_expenses), 2)
+
+    # Portfolio totals
+    tot_collected  = round(sum(p["income_collected"]         for p in property_results), 2)
+    tot_expected   = round(sum(p["income_expected"]          for p in property_results), 2)
+    tot_mortgages  = round(sum(p["mortgage_payment"]         for p in property_results), 2)
+    tot_operating  = round(sum(p["total_operating_expenses"] for p in property_results), 2)
+    net_portfolio  = round(tot_collected - tot_mortgages - tot_operating - common_total, 2)
+
+    return {
+        "period":     {"year": year, "month": month},
+        "properties": property_results,
+        "common_expenses": common_expenses,
+        "common_total":    common_total,
+        "portfolio": {
+            "income_collected":   tot_collected,
+            "income_expected":    tot_expected,
+            "mortgage_payments":  tot_mortgages,
+            "operating_expenses": tot_operating,
+            "common_expenses":    common_total,
+            "net_cash_flow":      net_portfolio,
+        },
+    }

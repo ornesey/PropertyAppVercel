@@ -31,6 +31,7 @@ export interface FixedCost {
   amount: number;
   frequency: string;
   start_date: string;
+  day_of_month: number;
   notes: string | null;
   active: boolean;
   property_id: number | null;

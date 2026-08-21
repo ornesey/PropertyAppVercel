@@ -10,6 +10,7 @@ import type { Vendor } from "@/types/maintenance";
 const today = new Date().toISOString().slice(0, 10);
 const currentYear  = new Date().getFullYear();
 const currentMonth = new Date().getMonth() + 1;
+const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 function fmt(n: number) { return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 
@@ -317,6 +318,7 @@ function FixedCostRow({ fc, expenseTypes, properties, vendors, onChanged }: {
   const [propId, setPropId]     = useState(String(fc.property_id ?? ""));
   const [vendorId, setVendorId] = useState(String(fc.vendor_id ?? ""));
   const [startDate, setStartDate] = useState(fc.start_date?.slice(0, 10) ?? today);
+  const [dayOfMonth, setDayOfMonth] = useState(String(fc.day_of_month ?? 1));
   const [notes, setNotes]       = useState(fc.notes ?? "");
   const [active, setActive]     = useState(fc.active);
 
@@ -328,6 +330,7 @@ function FixedCostRow({ fc, expenseTypes, properties, vendors, onChanged }: {
       property_id: propId ? Number(propId) : null,
       vendor_id: vendorId ? Number(vendorId) : null,
       start_date: startDate,
+      day_of_month: Number(dayOfMonth) || 1,
       notes: notes || null,
       active,
     });
@@ -353,7 +356,7 @@ function FixedCostRow({ fc, expenseTypes, properties, vendors, onChanged }: {
           </div>
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          <span className="text-xs text-gray-400">{fc.frequency}</span>
+          <span className="text-xs text-gray-400">{fc.frequency} · day {fc.day_of_month ?? 1}</span>
           <span className="font-semibold text-sm text-gray-900">{fmt(fc.amount)}</span>
           {!fc.active && (
             <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-400">Inactive</span>
@@ -392,10 +395,11 @@ function FixedCostRow({ fc, expenseTypes, properties, vendors, onChanged }: {
                 <Select label="Property" value={propId} onChange={setPropId} nullable
                   options={properties.map((p) => ({ value: String(p.property_id), label: p.address }))} />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <Select label="Vendor" value={vendorId} onChange={setVendorId} nullable
                   options={vendors.map((v) => ({ value: String(v.vendor_id), label: v.company_name }))} />
                 <Input label="Start Date" value={startDate} onChange={setStartDate} type="date" />
+                <Input label="Day of month (1–28)" value={dayOfMonth} onChange={setDayOfMonth} type="number" />
               </div>
               <Input label="Notes" value={notes} onChange={setNotes} />
               <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
@@ -431,6 +435,7 @@ function AddFixedCostForm({ expenseTypes, properties, vendors, onAdded }: {
   const [propId, setPropId]     = useState("");
   const [vendorId, setVendorId] = useState("");
   const [startDate, setStartDate] = useState(today);
+  const [dayOfMonth, setDayOfMonth] = useState("1");
   const [notes, setNotes]       = useState("");
   const [saving, setSaving]     = useState(false);
   const [error, setError]       = useState("");
@@ -447,10 +452,11 @@ function AddFixedCostForm({ expenseTypes, properties, vendors, onAdded }: {
         property_id: propId ? Number(propId) : null,
         vendor_id: vendorId ? Number(vendorId) : null,
         start_date: startDate,
+        day_of_month: Number(dayOfMonth) || 1,
         notes: notes || null,
       });
       setOpen(false);
-      setName(""); setAmount(""); setNotes("");
+      setName(""); setAmount(""); setNotes(""); setDayOfMonth("1");
       onAdded();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to add fixed cost");
@@ -481,10 +487,11 @@ function AddFixedCostForm({ expenseTypes, properties, vendors, onAdded }: {
         <Select label="Property (optional)" value={propId} onChange={setPropId} nullable
           options={properties.map((p) => ({ value: String(p.property_id), label: p.address }))} />
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <Select label="Vendor (optional)" value={vendorId} onChange={setVendorId} nullable
           options={vendors.map((v) => ({ value: String(v.vendor_id), label: v.company_name }))} />
         <Input label="Start Date" value={startDate} onChange={setStartDate} type="date" />
+        <Input label="Day of month (1–28)" value={dayOfMonth} onChange={setDayOfMonth} type="number" />
       </div>
       <Input label="Notes" value={notes} onChange={setNotes} />
       {error && <p className="text-xs text-red-600">{error}</p>}
@@ -568,13 +575,56 @@ export default function ExpensesPage() {
     if (!loading) loadExpenses();
   }, [selYear, selMonth, selProp]);
 
+  interface GenPreviewItem { name: string; property: string; amount: number; months: number[]; }
+  const [genConfirmCount, setGenConfirmCount] = useState<number | null>(null);
+  const [genPreviewItems, setGenPreviewItems] = useState<GenPreviewItem[]>([]);
+
+  function genScope() {
+    // Returns a human-readable scope string and the URL month param (if any)
+    if (selMonth) {
+      const label = `${selYear}-${selMonth.padStart(2, "0")}`;
+      return { label, monthParam: `&month=${selMonth}` };
+    }
+    return { label: `all of ${selYear}`, monthParam: "" };
+  }
+
   async function generateFixed() {
-    const month = `${selYear}-${String(selMonth || currentMonth).padStart(2, "0")}`;
+    // Guard: don't call the API for a future month
+    if (selMonth) {
+      const sel = new Date(Number(selYear), Number(selMonth) - 1, 1);
+      const now  = new Date(); now.setDate(1); now.setHours(0,0,0,0);
+      if (sel > now) {
+        setGenMsg("⚠ Cannot generate expenses for a future month.");
+        return;
+      }
+    }
     setGenerating(true);
     setGenMsg("");
-    const r = await api<{ created: number }>("POST", `/api/v1/rental/fixed-costs/generate?month=${month}`);
+    setGenConfirmCount(null);
+    const { monthParam } = genScope();
+    const r = await api<{ would_create: number; items: GenPreviewItem[] }>(
+      "GET", `/api/v1/rental/fixed-costs/preview-year?year=${selYear}${monthParam}`
+    );
+    const count = r?.would_create ?? 0;
+    setGenerating(false);
+    if (count === 0) {
+      setGenMsg(`All fixed cost entries already exist for ${genScope().label}.`);
+    } else {
+      setGenConfirmCount(count);
+      setGenPreviewItems(r?.items ?? []);
+    }
+  }
+
+  async function confirmGenerate() {
+    setGenerating(true);
+    setGenConfirmCount(null);
+    setGenPreviewItems([]);
+    const { label, monthParam } = genScope();
+    const r = await api<{ created: number }>(
+      "POST", `/api/v1/rental/fixed-costs/generate-year?year=${selYear}${monthParam}`
+    );
     const created = r?.created ?? 0;
-    setGenMsg(created > 0 ? `✅ Created ${created} expense entries for ${month}.` : "All entries already exist.");
+    setGenMsg(`✅ Created ${created} expense entries for ${label}.`);
     setGenerating(false);
     loadExpenses();
   }
@@ -620,12 +670,49 @@ export default function ExpensesPage() {
             <Select label="Type" value={selType} onChange={setSelType} nullable
               options={expenseTypes.map((t) => ({ value: String(t.type_id), label: t.name }))} />
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-gray-500">Fixed Costs</label>
-              <button onClick={generateFixed} disabled={generating}
+              <label className="text-xs font-medium text-gray-500">
+                Fixed Costs ({selMonth ? `${selYear}-${selMonth.padStart(2,"0")}` : `all of ${selYear}`})
+              </label>
+              <button onClick={generateFixed} disabled={generating || genConfirmCount !== null}
                 className="px-3 py-1.5 bg-gray-800 text-white text-sm rounded-lg hover:bg-gray-700 disabled:opacity-50">
-                ⚡ {generating ? "Generating…" : "Generate"}
+                ⚡ {generating ? "Checking…" : "Generate"}
               </button>
             </div>
+            {genConfirmCount !== null && (
+              <div className="col-span-full mt-1 border border-amber-200 bg-amber-50 rounded-xl p-4 space-y-3">
+                <p className="text-sm font-medium text-amber-800">
+                  ⚠ {genConfirmCount} entr{genConfirmCount === 1 ? "y" : "ies"} will be created for {genScope().label}:
+                </p>
+                <div className="divide-y divide-amber-100">
+                  {genPreviewItems.map((item, i) => (
+                    <div key={i} className="flex items-center justify-between py-1.5 text-xs text-gray-700 gap-3">
+                      <div className="min-w-0">
+                        <span className="font-medium">{item.name}</span>
+                        <span className="text-gray-400 ml-2">{item.property}</span>
+                      </div>
+                      <div className="shrink-0 text-right space-y-0.5">
+                        <div className="font-medium">${Number(item.amount).toLocaleString()}/mo</div>
+                        <div className="text-gray-400">
+                          {item.months.length === 1
+                            ? `month ${item.months[0]}`
+                            : `${item.months.length} months: ${item.months.map(m => MONTH_ABBR[m - 1]).join(", ")}`}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button onClick={confirmGenerate} disabled={generating}
+                    className="px-4 py-1.5 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium">
+                    {generating ? "Creating…" : "Yes, create all"}
+                  </button>
+                  <button onClick={() => { setGenConfirmCount(null); setGenPreviewItems([]); }}
+                    className="px-4 py-1.5 border border-gray-300 text-gray-600 text-xs rounded-lg hover:bg-gray-50">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             {genMsg && <p className="text-sm text-gray-600 self-end pb-1.5">{genMsg}</p>}
           </div>
 
