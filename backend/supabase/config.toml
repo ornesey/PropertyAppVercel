@@ -4,11 +4,6 @@
 # working directory name when running `supabase init`.
 project_id = "SupaPM"
 
-# Frontend environment values are usually stored in .env.local at the project root,
-# not in this CLI config file. Example:
-NEXT_PUBLIC_SUPABASE_URL=https://sahlgjyhzfeqnksmccdm.supabase.co
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_VBoqaeH6OkPZcl2owKJuRA_wM617Q0U
-
 [api]
 enabled = true
 # Port to use for the API URL.
