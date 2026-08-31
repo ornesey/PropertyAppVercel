@@ -107,6 +107,12 @@ function TenantRow({ tenant, idTypes, contactMethods, onChanged }: {
     ? `${tenant.address} — Unit ${tenant.unit_number} — ${tenant.space_name}`
     : "No active lease";
 
+  const obligation = Number(tenant.monthly_obligation ?? 0);
+  const isNonPrimaryOccupant = tenant.is_primary === false && obligation === 0;
+  const obligationText = obligation === 0
+    ? (isNonPrimaryOccupant ? "Occupant" : "$0/month")
+    : `$${obligation.toLocaleString()}/mo`;
+
   const statusCode = tenant.lease_status_code ?? null;
   const isActive = statusCode === 1 || statusCode === 2 || (!statusCode && (tenant.lease_status ?? "").toLowerCase() === "active");
   const statusLabel = statusCode === 1
@@ -162,11 +168,9 @@ function TenantRow({ tenant, idTypes, contactMethods, onChanged }: {
           <div>
             <span className="font-semibold text-gray-900">{name}</span>
             <span className="ml-3 text-xs text-gray-400">{location}</span>
-            {tenant.monthly_obligation && (
-              <span className="ml-2 text-xs text-gray-400">
-                ${Number(tenant.monthly_obligation).toLocaleString()}/mo
-              </span>
-            )}
+            <span className={`ml-2 text-xs ${isNonPrimaryOccupant ? "text-gray-500 font-normal" : "text-gray-400"}`}>
+              {obligationText}
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-3">

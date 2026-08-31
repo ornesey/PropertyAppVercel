@@ -13,6 +13,7 @@ export interface Tenant {
   preferred_contact_name: string | null;
   lease_id: number | null;
   monthly_obligation: number | null;
+  is_primary: boolean | null;
   lease_status_code: number | null;
   lease_status: string | null;
   space_name: string | null;
