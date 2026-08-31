@@ -106,7 +106,18 @@ function TenantRow({ tenant, idTypes, contactMethods, onChanged }: {
   const location = tenant.address
     ? `${tenant.address} — Unit ${tenant.unit_number} — ${tenant.space_name}`
     : "No active lease";
-  const isActive = tenant.lease_status === "active";
+
+  const statusCode = tenant.lease_status_code ?? null;
+  const isActive = statusCode === 1 || statusCode === 2 || (!statusCode && (tenant.lease_status ?? "").toLowerCase() === "active");
+  const statusLabel = statusCode === 1
+    ? "Active"
+    : statusCode === 2
+      ? "Active"
+      : statusCode === 3
+        ? "Expired"
+        : statusCode === 4
+          ? "Terminated"
+          : tenant.lease_status ? tenant.lease_status : "No Lease";
 
   async function save() {
     setSaving(true);
@@ -162,7 +173,7 @@ function TenantRow({ tenant, idTypes, contactMethods, onChanged }: {
           <span className={`text-xs px-2 py-0.5 rounded font-medium ${
             isActive ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
           }`}>
-            {isActive ? "Active" : "No Lease"}
+            {statusLabel}
           </span>
           <span className="text-gray-400">{open ? "▲" : "▼"}</span>
         </div>
@@ -371,8 +382,18 @@ export default function TenantsPage() {
   const dedupe = (list: Tenant[]) =>
     list.filter((t, i, arr) => arr.findIndex((x) => x.tenant_id === t.tenant_id) === i);
 
-  const active = dedupe(filtered.filter((t) => t.lease_status === "active"));
-  const past   = dedupe(filtered.filter((t) => t.lease_status !== "active"));
+  const active = dedupe(filtered.filter((t) => {
+    const code = t.lease_status_code ?? null;
+    if (code === 1 || code === 2) return true;
+    if (!code) return (t.lease_status ?? "").toLowerCase() === "active";
+    return false;
+  }));
+  const past   = dedupe(filtered.filter((t) => {
+    const code = t.lease_status_code ?? null;
+    if (code === 3 || code === 4) return true;
+    if (!code) return (t.lease_status ?? "").toLowerCase() !== "active";
+    return false;
+  }));
   const shown  = tab === "active" ? active : past;
 
   if (loading) return (

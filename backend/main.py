@@ -948,14 +948,16 @@ def get_tenants(org_id: int = Depends(get_org_id)):
                    t.id_type_id, t.id_number, t.preferred_contact_id, t.email_consent,
                    idt.name AS id_type_name, cm.name AS preferred_contact_name,
                    lm.lease_id, lm.monthly_obligation, lm.is_primary,
-                   l.status AS lease_status, l.start_date, l.end_date,
+                   l.status_code AS lease_status_code, l.status AS lease_status,
+                   ls.label AS lease_status_label, l.start_date, l.end_date,
                    rs.space_name, u.unit_number,
                    p.address
             FROM rental.tenants t
             LEFT JOIN rental.ref_id_types idt ON idt.type_id = t.id_type_id
             LEFT JOIN rental.ref_contact_methods cm ON cm.method_id = t.preferred_contact_id
             LEFT JOIN rental.lease_members lm ON lm.tenant_id = t.tenant_id
-            LEFT JOIN rental.leases l ON l.lease_id = lm.lease_id AND l.status = 'active'
+            LEFT JOIN rental.leases l ON l.lease_id = lm.lease_id
+            LEFT JOIN rental.ref_lease_statuses ls ON ls.code = l.status_code
             LEFT JOIN rental.rentable_spaces rs ON rs.space_id = l.space_id
             LEFT JOIN rental.units u ON u.unit_id = rs.unit_id
             LEFT JOIN rental.properties p ON p.property_id = u.property_id
