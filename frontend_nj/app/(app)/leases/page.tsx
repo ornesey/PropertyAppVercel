@@ -292,10 +292,10 @@ function LeaseRow({ lease, statuses, tenants, onChanged }: {
             {editing && (
               <div className="space-y-3 p-4 bg-gray-50 rounded-xl">
                 <div className="grid grid-cols-3 gap-3">
-                  <Input label="Total Rent ($)" value={rent} onChange={setRent} type="number" min="0" step="50" />
+                  <Input label="Total Rent ($)" value={rent} onChange={setRent} type="number" min="0" step="1" />
                   <Select label="Status" value={statusCode} onChange={setStatusCode}
                     options={statuses.map((s) => ({ value: String(s.code), label: s.label }))} />
-                  <Input label="LMR Deposit ($)" value={lmr} onChange={setLmr} type="number" min="0" step="50" />
+                  <Input label="LMR Deposit ($)" value={lmr} onChange={setLmr} type="number" min="0" step="1" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Input label="Start Date" value={startDate} onChange={setStartDate} type="date" />
@@ -406,9 +406,9 @@ function AddLeaseForm({ spaces, statuses, onAdded }: {
                 options={statuses.map((s) => ({ value: String(s.code), label: s.label }))} />
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <Input label="Total Rent ($)" value={rent} onChange={setRent} type="number" min="0" step="50" />
-              <Input label="Security Deposit ($)" value={deposit} onChange={setDeposit} type="number" min="0" step="50" />
-              <Input label="LMR Deposit ($)" value={lmr} onChange={setLmr} type="number" min="0" step="50" />
+              <Input label="Total Rent ($)" value={rent} onChange={setRent} type="number" min="0" step="1" />
+              <Input label="Security Deposit ($)" value={deposit} onChange={setDeposit} type="number" min="0" step="1" />
+              <Input label="LMR Deposit ($)" value={lmr} onChange={setLmr} type="number" min="0" step="1" />
             </div>
             <Input label="Notes" value={notes} onChange={setNotes} />
             {error && <p className="text-xs text-red-600">{error}</p>}
