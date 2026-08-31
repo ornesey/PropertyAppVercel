@@ -1554,9 +1554,11 @@ def get_rental_dashboard(org_id: int = Depends(get_org_id)):
         ), {"org_id": org_id}).mappings().fetchone() or {"plan_tier": "free", "property_limit": 1}
 
         spaces_total = conn.execute(sql("SELECT COUNT(*) FROM rental.rentable_spaces")).scalar()
-        spaces_occupied = conn.execute(sql(
-            "SELECT COUNT(DISTINCT space_id) FROM rental.leases WHERE status = 'active'"
-        )).scalar()
+        spaces_occupied = conn.execute(sql("""
+            SELECT COUNT(DISTINCT l.space_id)
+            FROM rental.leases l
+            WHERE l.status_code IN (1, 2)
+        """)).scalar()
 
         rent_collected = conn.execute(sql("""
             SELECT COALESCE(SUM(amount_paid), 0)
@@ -1607,7 +1609,6 @@ def get_rental_dashboard(org_id: int = Depends(get_org_id)):
             FROM rental.lease_members lm
             JOIN rental.leases l ON l.lease_id = lm.lease_id
             WHERE l.status_code IN (1, 2)
-               OR l.status = 'active'
         """)).scalar()
 
     return {
