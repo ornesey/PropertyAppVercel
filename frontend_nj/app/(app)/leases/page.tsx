@@ -104,7 +104,7 @@ function MemberRow({ member, onChanged }: { member: LeaseMember; onChanged: () =
       </div>
       {editing && (
         <div className="w-full col-span-2 flex items-end gap-3 mt-2">
-          <Input label="$/mo" value={obligation} onChange={setObligation} type="number" min="0" step="25" />
+          <Input label="$/mo" value={obligation} onChange={setObligation} type="number" min="0" step="1" />
           <label className="flex items-center gap-1.5 text-sm text-gray-600 pb-1.5 cursor-pointer">
             <input type="checkbox" checked={isPrimary} onChange={(e) => setIsPrimary(e.target.checked)}
               className="rounded border-gray-300" />
@@ -163,7 +163,7 @@ function AddMemberForm({ leaseId, tenants, onAdded }: {
       <div className="grid grid-cols-2 gap-3">
         <Select label="Tenant" value={tenantId} onChange={setTenantId}
           options={tenants.map((t) => ({ value: String(t.tenant_id), label: `${t.first_name} ${t.last_name}` }))} />
-        <Input label="Monthly Obligation ($)" value={obligation} onChange={setObligation} type="number" min="0" step="25" />
+        <Input label="Monthly Obligation ($)" value={obligation} onChange={setObligation} type="number" min="0" step="1" />
       </div>
       <div className="flex items-center gap-4">
         <Select label="Type" value={memberType} onChange={setMemberType}
