@@ -308,6 +308,8 @@ export default function DepositsPage() {
   const [leases, setLeases]     = useState<Lease[]>([]);
   const [loading, setLoading]   = useState(true);
   const [filter, setFilter]     = useState<"all" | "held" | "applied">("all");
+  const [propFilter, setPropFilter]     = useState("All");
+  const [tenantSearch, setTenantSearch] = useState("");
 
   async function load() {
     const [d, l] = await Promise.all([
@@ -325,10 +327,20 @@ export default function DepositsPage() {
     load();
   }, [router]);
 
-  const filtered = useMemo(() =>
-    filter === "all" ? deposits : deposits.filter((d) => d.status === filter),
-    [deposits, filter]
+  const properties = useMemo(
+    () => ["All", ...Array.from(new Set(deposits.map((d) => d.address)))],
+    [deposits]
   );
+
+  const filtered = useMemo(() => {
+    let list = filter === "all" ? deposits : deposits.filter((d) => d.status === filter);
+    if (propFilter !== "All") list = list.filter((d) => d.address === propFilter);
+    if (tenantSearch) {
+      const q = tenantSearch.toLowerCase();
+      list = list.filter((d) => d.tenant_name.toLowerCase().includes(q));
+    }
+    return list;
+  }, [deposits, filter, propFilter, tenantSearch]);
 
   const totalHeld    = useMemo(() => deposits.filter((d) => d.status === "held").reduce((s, d) => s + Number(d.amount), 0), [deposits]);
   const totalApplied = useMemo(() => deposits.filter((d) => d.status === "applied").reduce((s, d) => s + Number(d.amount), 0), [deposits]);
@@ -365,6 +377,16 @@ export default function DepositsPage() {
 
       <RecordDepositForm leases={leases} onAdded={load} />
 
+      <div className="flex gap-3">
+        <input value={tenantSearch} onChange={(e) => setTenantSearch(e.target.value)}
+          placeholder="Search by tenant name…"
+          className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <select value={propFilter} onChange={(e) => setPropFilter(e.target.value)}
+          className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+          {properties.map((p) => <option key={p}>{p}</option>)}
+        </select>
+      </div>
+
       {/* Filter tabs */}
       <div className="flex gap-1 border-b border-gray-200">
         {tabs.map(({ key, label }) => (
@@ -381,7 +403,7 @@ export default function DepositsPage() {
 
       {filtered.length === 0 ? (
         <p className="text-sm text-gray-400">
-          No deposits{filter !== "all" ? ` with status "${filter}"` : ""}.
+          {propFilter !== "All" || tenantSearch ? "No deposits match the current filter." : `No deposits${filter !== "all" ? ` with status "${filter}"` : ""}.`}
         </p>
       ) : (
         <div className="space-y-3">
