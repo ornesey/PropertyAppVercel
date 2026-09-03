@@ -3644,9 +3644,9 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
     property_expenses = [expense for prop in property_results for expense in prop["expenses"]]
     all_operating_expenses = property_expenses + common_expenses
     property_taxes = round(sum(expense["amount"] for expense in all_operating_expenses
-                               if expense["expense_type_id"] == 29), 2)
+                             if expense.get("expense_type_id") == 29), 2)
     insurance = round(sum(expense["amount"] for expense in all_operating_expenses
-                          if expense["expense_type_id"] == 28), 2)
+                         if expense.get("expense_type_id") == 28), 2)
     other_operating = round(tot_operating + common_total - property_taxes - insurance, 2)
     net_portfolio  = round(tot_collected - tot_mortgages - tot_operating - common_total, 2)
 
