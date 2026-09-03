@@ -239,6 +239,12 @@ function PropertyCard({ prop, year, month, onUpdated }: {
                 <span className="font-medium text-gray-800 w-24 text-right">{fmt(prop.mortgage_payment)}</span>
               </div>
             )}
+            {prop.monthly_principal_payment > 0 && (
+              <div className="flex items-center justify-between py-1.5 text-sm">
+                <span className="text-green-700">Monthly Principal</span>
+                <span className="font-medium text-green-700 w-24 text-right">+{fmt(prop.monthly_principal_payment)}</span>
+              </div>
+            )}
             {prop.expenses.map((item) => (
               <ExpenseRow key={item.expense_type_id ?? item.category}
                 item={item} propId={prop.property_id} year={year} month={month} onUpdated={onUpdated} />
@@ -252,6 +258,12 @@ function PropertyCard({ prop, year, month, onUpdated }: {
               <span>Net Cash Flow</span>
               <span className="w-24 text-right">{isPositive ? "+" : "−"}{fmt(prop.net_cash_flow)}</span>
             </div>
+            {prop.monthly_principal_payment > 0 && (
+              <div className="flex items-center justify-between py-2 text-sm font-semibold text-green-700">
+                <span>Total Monthly Principal</span>
+                <span className="w-24 text-right">+{fmt(prop.monthly_principal_payment)}</span>
+              </div>
+            )}
             {prop.mortgage_interest_tax_ref > 0 && (
               <p className="text-xs text-gray-400 italic pt-1">
                 Mortgage Interest (tax ref only): {fmt(prop.mortgage_interest_tax_ref)} — not counted in cash flow above
@@ -301,7 +313,7 @@ function ReportTab({ year, month, propFilter }: {
           { label: "Tax", value: fmt(portfolio.property_taxes), sub: null, color: "text-gray-900" },
           { label: "Insurance", value: fmt(portfolio.insurance), sub: null, color: "text-gray-900" },
           { label: "Other", value: fmt(portfolio.other_operating_expenses), sub: null, color: "text-gray-900" },
-          { label: "NET", value: `${netPositive ? "+" : "−"}${fmt(portfolio.net_cash_flow)}`,
+          { label: "NET CF", value: `${netPositive ? "+" : "−"}${fmt(portfolio.net_cash_flow)}`,
             sub: null, color: netPositive ? "text-green-600" : "text-red-600" },
         ].map((m) => (
           <div key={m.label} className="min-w-0 bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
@@ -364,6 +376,8 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
   const [rate,    setRate]    = useState(
     mortgage.interest_rate != null ? String((Number(mortgage.interest_rate) * 100).toFixed(2)) : ""
   );
+  const [balance, setBalance] = useState(mortgage.balance != null ? String(mortgage.balance) : "");
+  const [balanceDate, setBalanceDate] = useState(mortgage.balance_date?.slice(0, 10) ?? "");
   const [notes, setNotes] = useState(mortgage.notes ?? "");
 
   async function save() {
@@ -371,7 +385,10 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
     await api("PATCH", `/api/v1/rental/mortgages/${mortgage.mortgage_id}`, {
       lender: lender || null, monthly_payment: Number(payment),
       term_start: tStart, term_end: tEnd || null,
-      interest_rate: rate ? Number(rate) / 100 : null, notes: notes || null,
+      interest_rate: rate ? Number(rate) / 100 : null,
+         balance: balance ? Number(balance) : null,
+         balance_date: balanceDate || null,
+      notes: notes || null,
     });
     setSaving(false); setEditing(false); onChanged();
   }
@@ -402,6 +419,15 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
           <p className="text-xs text-gray-400">
             {mortgage.term_start?.slice(0, 10)} → {mortgage.term_end?.slice(0, 10) ?? "open-ended"}
           </p>
+          {mortgage.monthly_interest != null && mortgage.monthly_principal != null ? (
+            <p className="text-xs text-gray-500">
+              Balance {fmt(Number(mortgage.balance))} as of {mortgage.balance_date?.slice(0, 10)} ·
+              Interest {fmt(Number(mortgage.monthly_interest))}/mo ·
+              Principal {fmt(Number(mortgage.monthly_principal))}/mo
+            </p>
+          ) : (
+            <p className="text-xs text-amber-600">Add balance and balance date to estimate principal.</p>
+          )}
           {mortgage.notes && <p className="text-xs text-gray-400 italic">{mortgage.notes}</p>}
         </div>
         <div className="flex items-center gap-3 shrink-0">
@@ -427,6 +453,8 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
               { label: "Term Start", val: tStart, set: setTStart, type: "date", ph: "" },
               { label: "Term End (optional)", val: tEnd, set: setTEnd, type: "date", ph: "" },
               { label: "Interest Rate %", val: rate, set: setRate, type: "number", ph: "e.g. 5.49" },
+              { label: "Balance ($)", val: balance, set: setBalance, type: "number", ph: "e.g. 350000" },
+              { label: "Balance Date", val: balanceDate, set: setBalanceDate, type: "date", ph: "" },
               { label: "Notes", val: notes, set: setNotes, type: "text", ph: "" },
             ] as { label: string; val: string; set: (v: string) => void; type: string; ph: string }[]).map(({ label, val, set, type, ph }) => (
               <div key={label} className="flex flex-col gap-1">
@@ -453,6 +481,8 @@ function AddMortgageForm({ properties, onAdded }: { properties: Property[]; onAd
   const [open, setOpen]       = useState(false);
   const [propId, setPropId]   = useState("");
   const [lender, setLender]   = useState("");
+  const [balance, setBalance]    = useState("");
+  const [balanceDate, setBalanceDate] = useState(today);
   const [payment, setPayment] = useState("");
   const [tStart, setTStart]   = useState(today);
   const [tEnd, setTEnd]       = useState("");
@@ -474,10 +504,11 @@ function AddMortgageForm({ properties, onAdded }: { properties: Property[]; onAd
         property_id: Number(propId), lender: lender || null,
         monthly_payment: Number(payment), term_start: tStart,
         term_end: tEnd || null, interest_rate: rate ? Number(rate) / 100 : null,
+        balance: balance ? Number(balance) : null, balance_date: balanceDate || null,
         notes: notes || null,
       });
       setOpen(false);
-      setPayment(""); setLender(""); setTEnd(""); setRate(""); setNotes("");
+      setPayment(""); setLender(""); setTEnd(""); setRate(""); setBalance(""); setBalanceDate(today); setNotes("");
       onAdded();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to save");
@@ -508,6 +539,8 @@ function AddMortgageForm({ properties, onAdded }: { properties: Property[]; onAd
           { label: "Term Start *", val: tStart, set: setTStart, type: "date", ph: "", req: true },
           { label: "Term End (optional)", val: tEnd, set: setTEnd, type: "date", ph: "", req: false },
           { label: "Interest Rate % (optional)", val: rate, set: setRate, type: "number", ph: "e.g. 5.49", req: false },
+          { label: "Balance ($, optional)", val: balance, set: setBalance, type: "number", ph: "e.g. 350000", req: false },
+          { label: "Balance Date (optional)", val: balanceDate, set: setBalanceDate, type: "date", ph: "", req: false },
           { label: "Notes (optional)", val: notes, set: setNotes, type: "text", ph: "", req: false },
         ] as { label: string; val: string; set: (v: string) => void; type: string; ph: string; req: boolean }[]).map(({ label, val, set, type, ph, req }) => (
           <div key={label} className="flex flex-col gap-1">

@@ -11,6 +11,7 @@ export interface CashFlowProperty {
   income_collected: number;
   income_expected: number;
   mortgage_payment: number;
+  monthly_principal_payment: number;
   expenses: CashFlowExpenseItem[];
   total_operating_expenses: number;
   total_expenses: number;
@@ -51,5 +52,9 @@ export interface Mortgage {
   term_start: string;
   term_end: string | null;
   interest_rate: number | null;
+  balance: number | null;
+  balance_date: string | null;
+  monthly_interest: number | null;
+  monthly_principal: number | null;
   notes: string | null;
 }

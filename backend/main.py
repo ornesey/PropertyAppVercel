@@ -3122,6 +3122,8 @@ class MortgageBody(BaseModel):
     term_start:      date
     term_end:        Optional[date]  = None
     interest_rate:   Optional[float] = None
+    balance:         Optional[float] = None
+    balance_date:    Optional[date]  = None
     notes:           Optional[str]   = None
 
 class MortgageUpdate(BaseModel):
@@ -3130,6 +3132,8 @@ class MortgageUpdate(BaseModel):
     term_start:      Optional[date]  = None
     term_end:        Optional[date]  = None
     interest_rate:   Optional[float] = None
+    balance:         Optional[float] = None
+    balance_date:    Optional[date]  = None
     notes:           Optional[str]   = None
 
 @app.get("/api/v1/rental/mortgages")
@@ -3141,8 +3145,13 @@ def get_mortgages(property_id: Optional[int] = None, org_id: int = Depends(get_o
     where = "WHERE " + " AND ".join(filters)
     with get_connection_for_org(org_id) as conn:
         rows = conn.execute(sql(f"""
-            SELECT m.mortgage_id, m.property_id, m.lender, m.monthly_payment,
-                   m.term_start, m.term_end, m.interest_rate, m.notes, m.created_at,
+              SELECT m.mortgage_id, m.property_id, m.lender, m.monthly_payment,
+                    m.term_start, m.term_end, m.interest_rate, m.balance, m.balance_date,
+                    CASE WHEN m.balance IS NOT NULL AND m.interest_rate IS NOT NULL
+                        THEN ROUND((m.balance * m.interest_rate / 12)::numeric, 2) END AS monthly_interest,
+                    CASE WHEN m.balance IS NOT NULL AND m.interest_rate IS NOT NULL
+                        THEN GREATEST(ROUND((m.monthly_payment - (m.balance * m.interest_rate / 12))::numeric, 2), 0) END AS monthly_principal,
+                    m.notes, m.created_at,
                    p.address AS property_address
             FROM rental.mortgages m
             JOIN rental.properties p ON p.property_id = m.property_id
@@ -3156,9 +3165,11 @@ def create_mortgage(body: MortgageBody, org_id: int = Depends(get_org_id)):
     with get_connection_for_org(org_id) as conn:
         result = conn.execute(sql("""
             INSERT INTO rental.mortgages
-                (property_id, lender, monthly_payment, term_start, term_end, interest_rate, notes, org_id)
+                (property_id, lender, monthly_payment, term_start, term_end, interest_rate,
+                 balance, balance_date, notes, org_id)
             VALUES
-                (:property_id, :lender, :monthly_payment, :term_start, :term_end, :interest_rate, :notes, :org_id)
+                (:property_id, :lender, :monthly_payment, :term_start, :term_end, :interest_rate,
+                 :balance, :balance_date, :notes, :org_id)
             RETURNING mortgage_id
         """), {**body.model_dump(), "org_id": org_id})
         mid = result.fetchone()[0]
@@ -3399,7 +3410,8 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
 
         # Active mortgages for the period
         mortgage_rows = conn.execute(sql(f"""
-            SELECT m.property_id, m.monthly_payment, m.term_start, m.term_end
+                 SELECT m.property_id, m.monthly_payment, m.term_start, m.term_end,
+                     m.balance, m.interest_rate
             FROM rental.mortgages m
             WHERE m.org_id = :org_id
               AND m.term_start <= :pe
@@ -3409,10 +3421,20 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
 
         # Compute mortgage cash outflow per property
         mortgage_by_prop: dict = {}
+        monthly_principal_by_prop: dict = {}
         for m in mortgage_rows:
             pid = m["property_id"]
+            monthly_payment = float(m["monthly_payment"])
+            monthly_interest = (
+                float(m["balance"]) * float(m["interest_rate"]) / 12
+                if m["balance"] is not None and m["interest_rate"] is not None else None
+            )
+            if monthly_interest is not None:
+                monthly_principal_by_prop[pid] = monthly_principal_by_prop.get(pid, 0.0) + max(
+                    monthly_payment - monthly_interest, 0.0
+                )
             if month:
-                payment = float(m["monthly_payment"])
+                payment = monthly_payment
             else:
                 term_s = m["term_start"]
                 term_e = m["term_end"] if m["term_end"] else date(9999, 12, 31)
@@ -3421,7 +3443,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
                     if term_s <= date(year, mo, cal.monthrange(year, mo)[1])
                     and term_e >= date(year, mo, 1)
                 )
-                payment = float(m["monthly_payment"]) * months_active
+                payment = monthly_payment * months_active
             mortgage_by_prop[pid] = mortgage_by_prop.get(pid, 0.0) + payment
 
         # Stored estimates for the period
@@ -3536,6 +3558,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
         pid = prop["property_id"]
         inc  = income_map.get(pid, {"income_collected": 0, "income_expected": 0})
         mort = round(mortgage_by_prop.get(pid, 0.0), 2)
+        principal = round(monthly_principal_by_prop.get(pid, 0.0), 2)
         mi   = mi_map.get(pid, 0.0)
 
         actuals   = actuals_by_prop.get(pid, {})
@@ -3570,6 +3593,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
             "income_collected":          float(inc["income_collected"]),
             "income_expected":           float(inc["income_expected"]),
             "mortgage_payment":          mort,
+            "monthly_principal_payment": principal,
             "expenses":                  expenses,
             "total_operating_expenses":  total_op,
             "total_expenses":            total_exp,
