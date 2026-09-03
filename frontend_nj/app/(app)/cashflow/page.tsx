@@ -68,7 +68,7 @@ function ExpenseRow({ item, propId, year, month, onUpdated }: {
       });
       onUpdated();
     } catch (e: unknown) {
-      setCalcError(e instanceof Error ? e.message : "Not enough history to calculate");
+      setCalcError(e instanceof Error ? e.message : "No current or prior-year expenses to calculate from");
     } finally { setCalculating(false); }
   }
 
@@ -96,7 +96,7 @@ function ExpenseRow({ item, propId, year, month, onUpdated }: {
             </button>
           )}
           {!isActual && !editing && (
-            <button onClick={recalculate} disabled={calculating} title="Recalculate from 12-month average"
+            <button onClick={recalculate} disabled={calculating} title="Recalculate from prior full-year baseline"
               className="text-sm text-gray-400 hover:text-gray-700 disabled:opacity-50 w-4">
               {calculating ? "…" : "↻"}
             </button>

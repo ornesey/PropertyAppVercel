@@ -3242,18 +3242,24 @@ def delete_estimate(estimate_id: int, org_id: int = Depends(get_org_id)):
 
 @app.post("/api/v1/rental/cashflow/estimates/calculate")
 def calculate_estimate(body: EstimateCalculate, org_id: int = Depends(get_org_id)):
-    """Compute 12-month average from actual expenses and save as a calculated estimate."""
+    """Use the higher of current actuals and the previous full calendar year's baseline."""
     if body.month:
         period_start = date(body.year, body.month, 1)
+        import calendar as cal
+        period_end = date(body.year, body.month, cal.monthrange(body.year, body.month)[1])
     else:
         period_start = date(body.year, 1, 1)
-    twelve_months_ago = date(period_start.year - 1, period_start.month, period_start.day)
+        period_end = date(body.year, 12, 31)
+    prior_year_start = date(body.year - 1, 1, 1)
+    prior_year_end = date(body.year, 1, 1)
 
     prop_filter = "AND e.property_id = :property_id" if body.property_id else "AND e.property_id IS NULL"
     params: dict = {
         "expense_type_id": body.expense_type_id,
-        "tma": twelve_months_ago,
         "ps":  period_start,
+        "pe":  period_end,
+        "prior_year_start": prior_year_start,
+        "prior_year_end": prior_year_end,
         "org_id": org_id,
     }
     if body.property_id:
@@ -3261,25 +3267,32 @@ def calculate_estimate(body: EstimateCalculate, org_id: int = Depends(get_org_id
 
     with get_connection_for_org(org_id) as conn:
         hist = conn.execute(sql(f"""
-            SELECT COUNT(*) AS months_count, AVG(monthly_total) AS avg_amount
-            FROM (
-                SELECT DATE_TRUNC('month', e.expense_date) AS mo,
-                       SUM(e.amount) AS monthly_total
-                FROM rental.expenses e
-                WHERE e.expense_type_id = :expense_type_id
-                  AND e.org_id = :org_id
-                  AND e.expense_date >= :tma
-                  AND e.expense_date < :ps
-                  {prop_filter}
-                GROUP BY DATE_TRUNC('month', e.expense_date)
-            ) monthly
+            SELECT COALESCE(SUM(e.amount), 0) AS prior_year_total
+            FROM rental.expenses e
+            WHERE e.expense_type_id = :expense_type_id
+              AND e.org_id = :org_id
+              AND e.expense_date >= :prior_year_start
+              AND e.expense_date < :prior_year_end
+              {prop_filter}
+        """), params).mappings().fetchone()
+        actual = conn.execute(sql(f"""
+            SELECT COALESCE(SUM(e.amount), 0) AS actual_total
+            FROM rental.expenses e
+            WHERE e.expense_type_id = :expense_type_id
+              AND e.org_id = :org_id
+              AND e.expense_date >= :ps
+              AND e.expense_date <= :pe
+              {prop_filter}
         """), params).mappings().fetchone()
 
-        if not hist or int(hist["months_count"]) < 2:
+        prior_year_total = float(hist["prior_year_total"])
+        baseline = prior_year_total / 12 if body.month else prior_year_total
+        actual_total = float(actual["actual_total"])
+        if not prior_year_total and not actual_total:
             raise HTTPException(status_code=400,
-                detail="Not enough historical data — need at least 2 months of history to calculate")
+                detail="No expenses found for the current period or previous full year")
 
-        avg = round(float(hist["avg_amount"]), 2)
+        avg = round(max(actual_total, baseline), 2)
 
         existing = _find_estimate(conn, body.property_id, body.expense_type_id,
                                   body.year, body.month, org_id)
@@ -3300,7 +3313,7 @@ def calculate_estimate(body: EstimateCalculate, org_id: int = Depends(get_org_id
             eid = result.fetchone()[0]
         conn.commit()
 
-    return {"estimate_id": eid, "amount": avg, "months_used": int(hist["months_count"])}
+    return {"estimate_id": eid, "amount": avg, "months_used": 12}
 
 
 # ─── Cash Flow Report ─────────────────────────────────────────────────────────
@@ -3318,7 +3331,8 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
         period_start = date(year, 1, 1)
         period_end   = date(year, 12, 31)
 
-    twelve_months_ago = date(period_start.year - 1, period_start.month, period_start.day)
+    prior_year_start = date(year - 1, 1, 1)
+    prior_year_end = date(year, 1, 1)
 
     with get_connection_for_org(org_id) as conn:
         prop_extra   = "AND p.property_id = :pid" if property_id else ""
@@ -3361,6 +3375,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
             WHERE e.org_id = :org_id
               AND e.expense_date BETWEEN :ps AND :pe
               AND e.property_id IS NOT NULL
+                            AND e.expense_type_id IS NOT NULL
               AND COALESCE(et.name, e.expense_type, '') != 'Mortgage Interest'
               {"AND e.property_id = :pid" if property_id else ""}
             GROUP BY e.property_id, e.expense_type_id,
@@ -3375,6 +3390,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
             WHERE e.org_id = :org_id
               AND e.expense_date BETWEEN :ps AND :pe
               AND e.property_id IS NOT NULL
+              AND e.expense_type_id IS NOT NULL
               AND COALESCE(et.name, e.expense_type, '') = 'Mortgage Interest'
               {"AND e.property_id = :pid" if property_id else ""}
             GROUP BY e.property_id
@@ -3421,31 +3437,23 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
               {"AND cfe.property_id = :pid" if property_id else ""}
         """), {**base, "year": year, "month": month}).mappings().all()
 
-        # 12-month historical averages (candidate auto-estimates) for types with no current data
+        # Previous full calendar year totals, used as a floor for incomplete current actuals.
         hist_rows = conn.execute(sql(f"""
-            SELECT monthly.property_id, monthly.expense_type_id,
-                   COALESCE(et.name, 'Other') AS category,
-                   AVG(monthly.monthly_total) AS avg_amount
-            FROM (
-                SELECT e.property_id, e.expense_type_id,
-                       DATE_TRUNC('month', e.expense_date) AS mo,
-                       SUM(e.amount) AS monthly_total
-                FROM rental.expenses e
-                LEFT JOIN rental.ref_expense_types et2 ON et2.type_id = e.expense_type_id
-                WHERE e.org_id = :org_id
-                  AND e.expense_date >= :tma
-                  AND e.expense_date < :ps
-                  AND e.property_id IS NOT NULL
-                  AND e.expense_type_id IS NOT NULL
-                  AND COALESCE(et2.name, '') != 'Mortgage Interest'
-                  {"AND e.property_id = :pid" if property_id else ""}
-                GROUP BY e.property_id, e.expense_type_id,
-                         DATE_TRUNC('month', e.expense_date)
-            ) monthly
-            LEFT JOIN rental.ref_expense_types et ON et.type_id = monthly.expense_type_id
-            GROUP BY monthly.property_id, monthly.expense_type_id, et.name
-            HAVING COUNT(*) >= 2
-        """), {**base, "tma": twelve_months_ago, "ps": period_start}).mappings().all()
+             SELECT e.property_id, e.expense_type_id,
+                 COALESCE(et.name, e.expense_type, 'Other') AS category,
+                 SUM(e.amount) AS prior_year_total
+             FROM rental.expenses e
+             LEFT JOIN rental.ref_expense_types et ON et.type_id = e.expense_type_id
+             WHERE e.org_id = :org_id
+            AND e.expense_date >= :prior_year_start
+            AND e.expense_date < :prior_year_end
+            AND e.property_id IS NOT NULL
+            AND COALESCE(et.name, e.expense_type, '') != 'Mortgage Interest'
+            {"AND e.property_id = :pid" if property_id else ""}
+             GROUP BY e.property_id, e.expense_type_id,
+                COALESCE(et.name, e.expense_type, 'Other')
+        """), {**base, "prior_year_start": prior_year_start,
+               "prior_year_end": prior_year_end}).mappings().all()
 
         # Common expenses (no property)
         common_actual_rows = conn.execute(sql("""
@@ -3457,9 +3465,25 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
             WHERE e.org_id = :org_id
               AND e.expense_date BETWEEN :ps AND :pe
               AND e.property_id IS NULL
+                            AND e.expense_type_id IS NOT NULL
             GROUP BY e.expense_type_id, COALESCE(et.name, e.expense_type, 'Other')
             ORDER BY category
         """), {"org_id": org_id, "ps": period_start, "pe": period_end}).mappings().all()
+
+        common_hist_rows = conn.execute(sql("""
+            SELECT e.expense_type_id,
+                   COALESCE(et.name, e.expense_type, 'Other') AS category,
+                   SUM(e.amount) AS prior_year_total
+            FROM rental.expenses e
+            LEFT JOIN rental.ref_expense_types et ON et.type_id = e.expense_type_id
+            WHERE e.org_id = :org_id
+              AND e.expense_date >= :prior_year_start
+              AND e.expense_date < :prior_year_end
+              AND e.property_id IS NULL
+              AND COALESCE(et.name, e.expense_type, '') != 'Mortgage Interest'
+            GROUP BY e.expense_type_id, COALESCE(et.name, e.expense_type, 'Other')
+        """), {"org_id": org_id, "prior_year_start": prior_year_start,
+               "prior_year_end": prior_year_end}).mappings().all()
 
         common_est_rows = conn.execute(sql("""
             SELECT cfe.estimate_id, cfe.expense_type_id,
@@ -3474,7 +3498,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
 
     # ── Merge per-property data in Python ──────────────────────────────────────
 
-    # Index actuals: property_id → {type_id → row}
+    # Index actuals: property_id → {type/category key → row}
     actuals_by_prop: dict = {}
     for r in actual_rows:
         pid = r["property_id"]
@@ -3496,14 +3520,14 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
             "source": r["source"],
         }
 
-    # Index 12-month averages (only used where no actual and no stored estimate)
+    # Index prior-year baselines (used as a floor when current actuals are lower).
     hist_by_prop: dict = {}
     for r in hist_rows:
         pid = r["property_id"]
         hist_by_prop.setdefault(pid, {})[r["expense_type_id"]] = {
             "expense_type_id": r["expense_type_id"],
             "category": r["category"],
-            "amount": round(float(r["avg_amount"]), 2),
+            "amount": round(float(r["prior_year_total"]) / 12 if month else float(r["prior_year_total"]), 2),
             "source": "calculated",
         }
 
@@ -3523,8 +3547,14 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
         expenses = []
         for tid in sorted(all_type_ids,
                            key=lambda t: (actuals.get(t) or estimates.get(t) or hist.get(t) or {}).get("category", "")):
-            if tid in actuals:
+            if tid in estimates and estimates[tid]["source"] == "manual":
+                expenses.append(estimates[tid])
+            elif tid in actuals and tid in hist:
+                expenses.append(actuals[tid] if actuals[tid]["amount"] >= hist[tid]["amount"] else hist[tid])
+            elif tid in actuals:
                 expenses.append(actuals[tid])
+            elif tid in hist:
+                expenses.append(hist[tid])
             elif tid in estimates:
                 expenses.append(estimates[tid])
             else:
@@ -3554,9 +3584,18 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
     common_est_map      = {r["expense_type_id"]: {"category": r["category"],
                             "amount": float(r["amount"]), "source": r["source"]}
                            for r in common_est_rows}
-    all_common = set(common_actuals_map) | set(common_est_map)
+    common_hist_map     = {r["expense_type_id"]: {"category": r["category"],
+                            "amount": round(float(r["prior_year_total"]) / 12 if month
+                                             else float(r["prior_year_total"]), 2),
+                            "source": "calculated"}
+                           for r in common_hist_rows}
+    all_common = set(common_actuals_map) | set(common_est_map) | set(common_hist_map)
     common_expenses = sorted(
-        [common_actuals_map[t] if t in common_actuals_map else common_est_map[t]
+          [common_est_map[t] if t in common_est_map and common_est_map[t]["source"] == "manual"
+         else (common_actuals_map[t] if t in common_actuals_map and t not in common_hist_map
+               else (common_hist_map[t] if t in common_hist_map and t not in common_actuals_map
+                     else (common_actuals_map[t] if common_actuals_map[t]["amount"] >= common_hist_map[t]["amount"]
+                       else common_hist_map[t])))
          for t in all_common],
         key=lambda x: x["category"]
     )
