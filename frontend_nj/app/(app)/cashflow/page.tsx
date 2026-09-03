@@ -294,14 +294,14 @@ function ReportTab({ year, month, propFilter }: {
     <div className="space-y-6">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {[
-          { label: "Income Collected", value: `$${portfolio.income_collected.toLocaleString()}`,
+          { label: "Rent", value: `$${portfolio.income_collected.toLocaleString()}`,
             sub: portfolio.income_expected !== portfolio.income_collected ? `/ $${portfolio.income_expected.toLocaleString()} expected` : null,
             color: "text-gray-900" },
-          { label: "Mortgage Payments", value: `$${portfolio.mortgage_payments.toLocaleString()}`, sub: null, color: "text-gray-900" },
+          { label: "Mortgage", value: `$${portfolio.mortgage_payments.toLocaleString()}`, sub: null, color: "text-gray-900" },
           { label: "Tax", value: `$${portfolio.property_taxes.toLocaleString()}`, sub: null, color: "text-gray-900" },
           { label: "Insurance", value: `$${portfolio.insurance.toLocaleString()}`, sub: null, color: "text-gray-900" },
-          { label: "Other Operating", value: `$${portfolio.other_operating_expenses.toLocaleString()}`, sub: null, color: "text-gray-900" },
-          { label: "Net Cash Flow", value: `${netPositive ? "+" : "−"}$${Math.abs(portfolio.net_cash_flow).toLocaleString()}`,
+          { label: "Other", value: `$${portfolio.other_operating_expenses.toLocaleString()}`, sub: null, color: "text-gray-900" },
+          { label: "NET", value: `${netPositive ? "+" : "−"}$${Math.abs(portfolio.net_cash_flow).toLocaleString()}`,
             sub: null, color: netPositive ? "text-green-600" : "text-red-600" },
         ].map((m) => (
           <div key={m.label} className="min-w-0 bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
