@@ -3357,7 +3357,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
 
         # Properties
         properties = conn.execute(sql(f"""
-            SELECT property_id, address FROM rental.properties
+            SELECT property_id, address FROM rental.properties p
             WHERE org_id = :org_id {prop_extra}
             ORDER BY address
         """), base).mappings().all()
