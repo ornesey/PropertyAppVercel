@@ -14,7 +14,7 @@ interface Property { property_id: number; address: string; }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmt(n: number) { return `$${Math.abs(n).toLocaleString()}`; }
+function fmt(n: number) { return `$${Math.round(Math.abs(n)).toLocaleString()}`; }
 function currentYear()  { return new Date().getFullYear(); }
 function currentMonth() { return new Date().getMonth() + 1; }
 function yearOptions()  {
@@ -294,14 +294,14 @@ function ReportTab({ year, month, propFilter }: {
     <div className="space-y-6">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {[
-          { label: "Rent", value: `$${portfolio.income_collected.toLocaleString()}`,
-            sub: portfolio.income_expected !== portfolio.income_collected ? `/ $${portfolio.income_expected.toLocaleString()} expected` : null,
+          { label: "Rent", value: fmt(portfolio.income_collected),
+            sub: portfolio.income_expected !== portfolio.income_collected ? `${fmt(portfolio.income_expected)} expected` : null,
             color: "text-gray-900" },
-          { label: "Mortgage", value: `$${portfolio.mortgage_payments.toLocaleString()}`, sub: null, color: "text-gray-900" },
-          { label: "Tax", value: `$${portfolio.property_taxes.toLocaleString()}`, sub: null, color: "text-gray-900" },
-          { label: "Insurance", value: `$${portfolio.insurance.toLocaleString()}`, sub: null, color: "text-gray-900" },
-          { label: "Other", value: `$${portfolio.other_operating_expenses.toLocaleString()}`, sub: null, color: "text-gray-900" },
-          { label: "NET", value: `${netPositive ? "+" : "−"}$${Math.abs(portfolio.net_cash_flow).toLocaleString()}`,
+          { label: "Mortgage", value: fmt(portfolio.mortgage_payments), sub: null, color: "text-gray-900" },
+          { label: "Tax", value: fmt(portfolio.property_taxes), sub: null, color: "text-gray-900" },
+          { label: "Insurance", value: fmt(portfolio.insurance), sub: null, color: "text-gray-900" },
+          { label: "Other", value: fmt(portfolio.other_operating_expenses), sub: null, color: "text-gray-900" },
+          { label: "NET", value: `${netPositive ? "+" : "−"}${fmt(portfolio.net_cash_flow)}`,
             sub: null, color: netPositive ? "text-green-600" : "text-red-600" },
         ].map((m) => (
           <div key={m.label} className="min-w-0 bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
@@ -337,12 +337,12 @@ function ReportTab({ year, month, propFilter }: {
                     <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-400">est.</span>
                   )}
                 </div>
-                <span className="font-medium text-gray-800">${Number(e.amount).toLocaleString()}</span>
+                <span className="font-medium text-gray-800">{fmt(Number(e.amount))}</span>
               </div>
             ))}
             <div className="flex items-center justify-between py-2 text-sm font-semibold text-gray-700">
               <span>Total Common</span>
-              <span>${common_total.toLocaleString()}</span>
+              <span>{fmt(common_total)}</span>
             </div>
           </div>
         </div>
@@ -392,7 +392,7 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
             <span className={`w-2 h-2 rounded-full shrink-0 ${isActive ? "bg-green-500" : "bg-gray-300"}`}
               title={isActive ? "Active" : "Expired"} />
             <span className="font-medium text-sm text-gray-900">
-              ${Number(mortgage.monthly_payment).toLocaleString()}/mo
+              {fmt(Number(mortgage.monthly_payment))}/mo
             </span>
             {mortgage.lender && <span className="text-xs text-gray-500">{mortgage.lender}</span>}
             {mortgage.interest_rate != null && (
