@@ -292,7 +292,7 @@ function ReportTab({ year, month, propFilter }: {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {[
           { label: "Income Collected", value: `$${portfolio.income_collected.toLocaleString()}`,
             sub: portfolio.income_expected !== portfolio.income_collected ? `/ $${portfolio.income_expected.toLocaleString()} expected` : null,
@@ -304,9 +304,9 @@ function ReportTab({ year, month, propFilter }: {
           { label: "Net Cash Flow", value: `${netPositive ? "+" : "−"}$${Math.abs(portfolio.net_cash_flow).toLocaleString()}`,
             sub: null, color: netPositive ? "text-green-600" : "text-red-600" },
         ].map((m) => (
-          <div key={m.label} className="bg-white border border-gray-100 rounded-xl p-4 shadow-sm">
-            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">{m.label}</p>
-            <p className={`text-xl font-bold mt-1 ${m.color}`}>{m.value}</p>
+          <div key={m.label} className="min-w-0 bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide break-words">{m.label}</p>
+            <p className={`text-lg font-bold mt-1 whitespace-nowrap ${m.color}`}>{m.value}</p>
             {m.sub && <p className="text-xs text-gray-400 mt-0.5">{m.sub}</p>}
           </div>
         ))}
