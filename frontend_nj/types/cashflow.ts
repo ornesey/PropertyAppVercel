@@ -32,6 +32,7 @@ export interface CashFlowPortfolio {
   property_taxes: number;
   insurance: number;
   other_operating_expenses: number;
+  monthly_principal_payment: number;
   net_cash_flow: number;
 }
 

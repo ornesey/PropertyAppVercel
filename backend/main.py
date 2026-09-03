@@ -3421,7 +3421,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
 
         # Compute mortgage cash outflow per property
         mortgage_by_prop: dict = {}
-        monthly_principal_by_prop: dict = {}
+        mortgage_principal_inputs_by_prop: dict = {}
         for m in mortgage_rows:
             pid = m["property_id"]
             monthly_payment = float(m["monthly_payment"])
@@ -3429,10 +3429,9 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
                 float(m["balance"]) * float(m["interest_rate"]) / 12
                 if m["balance"] is not None and m["interest_rate"] is not None else None
             )
-            if monthly_interest is not None:
-                monthly_principal_by_prop[pid] = monthly_principal_by_prop.get(pid, 0.0) + max(
-                    monthly_payment - monthly_interest, 0.0
-                )
+            mortgage_principal_inputs_by_prop.setdefault(pid, []).append(
+                (monthly_payment, monthly_interest)
+            )
             if month:
                 payment = monthly_payment
             else:
@@ -3558,7 +3557,6 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
         pid = prop["property_id"]
         inc  = income_map.get(pid, {"income_collected": 0, "income_expected": 0})
         mort = round(mortgage_by_prop.get(pid, 0.0), 2)
-        principal = round(monthly_principal_by_prop.get(pid, 0.0), 2)
         mi   = mi_map.get(pid, 0.0)
 
         actuals   = actuals_by_prop.get(pid, {})
@@ -3584,6 +3582,13 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
                 expenses.append(hist[tid])
 
         total_op  = round(sum(e["amount"] for e in expenses), 2)
+        disability_insurance = sum(
+            e["amount"] for e in expenses if e["expense_type_id"] == 37
+        ) / (12 if not month else 1)
+        principal = round(sum(
+            max(monthly_payment - (monthly_interest or 0.0) - disability_insurance / len(mortgage_principal_inputs_by_prop[pid]), 0.0)
+            for monthly_payment, monthly_interest in mortgage_principal_inputs_by_prop.get(pid, [])
+        ), 2) if mortgage_principal_inputs_by_prop.get(pid) else 0.0
         total_exp = round(total_op + mort, 2)
         net       = round(float(inc["income_collected"]) - total_exp, 2)
 
@@ -3633,6 +3638,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
     tot_expected   = round(sum(p["income_expected"]          for p in property_results), 2)
     tot_mortgages  = round(sum(p["mortgage_payment"]         for p in property_results), 2)
     tot_operating  = round(sum(p["total_operating_expenses"] for p in property_results), 2)
+    tot_monthly_principal = round(sum(p["monthly_principal_payment"] for p in property_results), 2)
     property_expenses = [expense for prop in property_results for expense in prop["expenses"]]
     all_operating_expenses = property_expenses + common_expenses
     property_taxes = round(sum(expense["amount"] for expense in all_operating_expenses
@@ -3654,6 +3660,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
             "property_taxes":     property_taxes,
             "insurance":          insurance,
             "other_operating_expenses": other_operating,
+            "monthly_principal_payment": tot_monthly_principal,
             "net_cash_flow":      net_portfolio,
         },
     }

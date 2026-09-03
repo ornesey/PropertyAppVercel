@@ -239,12 +239,6 @@ function PropertyCard({ prop, year, month, onUpdated }: {
                 <span className="font-medium text-gray-800 w-24 text-right">{fmt(prop.mortgage_payment)}</span>
               </div>
             )}
-            {prop.monthly_principal_payment > 0 && (
-              <div className="flex items-center justify-between py-1.5 text-sm">
-                <span className="text-green-700">Monthly Principal</span>
-                <span className="font-medium text-green-700 w-24 text-right">+{fmt(prop.monthly_principal_payment)}</span>
-              </div>
-            )}
             {prop.expenses.map((item) => (
               <ExpenseRow key={item.expense_type_id ?? item.category}
                 item={item} propId={prop.property_id} year={year} month={month} onUpdated={onUpdated} />
@@ -258,12 +252,6 @@ function PropertyCard({ prop, year, month, onUpdated }: {
               <span>Net Cash Flow</span>
               <span className="w-24 text-right">{isPositive ? "+" : "−"}{fmt(prop.net_cash_flow)}</span>
             </div>
-            {prop.monthly_principal_payment > 0 && (
-              <div className="flex items-center justify-between py-2 text-sm font-semibold text-green-700">
-                <span>Total Monthly Principal</span>
-                <span className="w-24 text-right">+{fmt(prop.monthly_principal_payment)}</span>
-              </div>
-            )}
             {prop.mortgage_interest_tax_ref > 0 && (
               <p className="text-xs text-gray-400 italic pt-1">
                 Mortgage Interest (tax ref only): {fmt(prop.mortgage_interest_tax_ref)} — not counted in cash flow above
@@ -314,12 +302,12 @@ function ReportTab({ year, month, propFilter }: {
           { label: "Insurance", value: fmt(portfolio.insurance), sub: null, color: "text-gray-900" },
           { label: "Other", value: fmt(portfolio.other_operating_expenses), sub: null, color: "text-gray-900" },
           { label: "NET CF", value: `${netPositive ? "+" : "−"}${fmt(portfolio.net_cash_flow)}`,
-            sub: null, color: netPositive ? "text-green-600" : "text-red-600" },
+            sub: `Monthly Principal +${fmt(portfolio.monthly_principal_payment)}`, color: netPositive ? "text-green-600" : "text-red-600" },
         ].map((m) => (
           <div key={m.label} className="min-w-0 bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
             <p className="text-xs font-medium text-gray-400 uppercase tracking-wide break-words">{m.label}</p>
             <p className={`text-lg font-bold mt-1 whitespace-nowrap ${m.color}`}>{m.value}</p>
-            {m.sub && <p className="text-xs text-gray-400 mt-0.5">{m.sub}</p>}
+            {m.sub && <p className={`text-xs mt-0.5 ${m.label === "NET CF" ? "text-green-600" : "text-gray-400"}`}>{m.sub}</p>}
           </div>
         ))}
       </div>
