@@ -3578,13 +3578,16 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
         })
 
     # Common expenses merge
-    common_actuals_map  = {r["expense_type_id"]: {"category": r["category"],
+    common_actuals_map  = {r["expense_type_id"]: {"expense_type_id": r["expense_type_id"],
+                            "category": r["category"],
                             "amount": float(r["amount"]), "source": "actual"}
                            for r in common_actual_rows}
-    common_est_map      = {r["expense_type_id"]: {"category": r["category"],
+    common_est_map      = {r["expense_type_id"]: {"expense_type_id": r["expense_type_id"],
+                            "category": r["category"],
                             "amount": float(r["amount"]), "source": r["source"]}
                            for r in common_est_rows}
-    common_hist_map     = {r["expense_type_id"]: {"category": r["category"],
+    common_hist_map     = {r["expense_type_id"]: {"expense_type_id": r["expense_type_id"],
+                            "category": r["category"],
                             "amount": round(float(r["prior_year_total"]) / 12 if month
                                              else float(r["prior_year_total"]), 2),
                             "source": "calculated"}
