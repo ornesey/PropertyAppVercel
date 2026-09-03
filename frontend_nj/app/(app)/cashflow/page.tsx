@@ -302,7 +302,7 @@ function ReportTab({ year, month, propFilter }: {
           { label: "Insurance", value: fmt(portfolio.insurance), sub: null, color: "text-gray-900" },
           { label: "Other", value: fmt(portfolio.other_operating_expenses), sub: null, color: "text-gray-900" },
           { label: "NET CF", value: `${netPositive ? "+" : "−"}${fmt(portfolio.net_cash_flow)}`,
-            sub: `Monthly Principal +${fmt(portfolio.monthly_principal_payment)}`, color: netPositive ? "text-green-600" : "text-red-600" },
+            sub: `Principal +${fmt(portfolio.monthly_principal_payment)}`, color: netPositive ? "text-green-600" : "text-red-600" },
         ].map((m) => (
           <div key={m.label} className="min-w-0 bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
             <p className="text-xs font-medium text-gray-400 uppercase tracking-wide break-words">{m.label}</p>
