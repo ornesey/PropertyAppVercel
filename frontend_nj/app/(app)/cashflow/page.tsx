@@ -366,6 +366,9 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
   );
   const [balance, setBalance] = useState(mortgage.balance != null ? String(mortgage.balance) : "");
   const [balanceDate, setBalanceDate] = useState(mortgage.balance_date?.slice(0, 10) ?? "");
+  const [disabilityInsurance, setDisabilityInsurance] = useState(
+    mortgage.disability_insurance != null ? String(mortgage.disability_insurance) : ""
+  );
   const [notes, setNotes] = useState(mortgage.notes ?? "");
 
   async function save() {
@@ -376,6 +379,7 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
       interest_rate: rate ? Number(rate) / 100 : null,
          balance: balance ? Number(balance) : null,
          balance_date: balanceDate || null,
+         disability_insurance: disabilityInsurance ? Number(disabilityInsurance) : null,
       notes: notes || null,
     });
     setSaving(false); setEditing(false); onChanged();
@@ -411,6 +415,7 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
             <p className="text-xs text-gray-500">
               Balance {fmt(Number(mortgage.balance))} as of {mortgage.balance_date?.slice(0, 10)} ·
               Interest {fmt(Number(mortgage.monthly_interest))}/mo ·
+              Disability {fmt(Number(mortgage.disability_insurance ?? 0))}/mo ·
               Principal {fmt(Number(mortgage.monthly_principal))}/mo
             </p>
           ) : (
@@ -443,6 +448,7 @@ function MortgageRow({ mortgage, onChanged }: { mortgage: Mortgage; onChanged: (
               { label: "Interest Rate %", val: rate, set: setRate, type: "number", ph: "e.g. 5.49" },
               { label: "Balance ($)", val: balance, set: setBalance, type: "number", ph: "e.g. 350000" },
               { label: "Balance Date", val: balanceDate, set: setBalanceDate, type: "date", ph: "" },
+              { label: "Disability Insurance ($/mo)", val: disabilityInsurance, set: setDisabilityInsurance, type: "number", ph: "e.g. 50" },
               { label: "Notes", val: notes, set: setNotes, type: "text", ph: "" },
             ] as { label: string; val: string; set: (v: string) => void; type: string; ph: string }[]).map(({ label, val, set, type, ph }) => (
               <div key={label} className="flex flex-col gap-1">
@@ -471,6 +477,7 @@ function AddMortgageForm({ properties, onAdded }: { properties: Property[]; onAd
   const [lender, setLender]   = useState("");
   const [balance, setBalance]    = useState("");
   const [balanceDate, setBalanceDate] = useState(today);
+  const [disabilityInsurance, setDisabilityInsurance] = useState("");
   const [payment, setPayment] = useState("");
   const [tStart, setTStart]   = useState(today);
   const [tEnd, setTEnd]       = useState("");
@@ -493,10 +500,11 @@ function AddMortgageForm({ properties, onAdded }: { properties: Property[]; onAd
         monthly_payment: Number(payment), term_start: tStart,
         term_end: tEnd || null, interest_rate: rate ? Number(rate) / 100 : null,
         balance: balance ? Number(balance) : null, balance_date: balanceDate || null,
+        disability_insurance: disabilityInsurance ? Number(disabilityInsurance) : null,
         notes: notes || null,
       });
       setOpen(false);
-      setPayment(""); setLender(""); setTEnd(""); setRate(""); setBalance(""); setBalanceDate(today); setNotes("");
+      setPayment(""); setLender(""); setTEnd(""); setRate(""); setBalance(""); setBalanceDate(today); setDisabilityInsurance(""); setNotes("");
       onAdded();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to save");
@@ -529,6 +537,7 @@ function AddMortgageForm({ properties, onAdded }: { properties: Property[]; onAd
           { label: "Interest Rate % (optional)", val: rate, set: setRate, type: "number", ph: "e.g. 5.49", req: false },
           { label: "Balance ($, optional)", val: balance, set: setBalance, type: "number", ph: "e.g. 350000", req: false },
           { label: "Balance Date (optional)", val: balanceDate, set: setBalanceDate, type: "date", ph: "", req: false },
+          { label: "Disability Insurance ($/mo, optional)", val: disabilityInsurance, set: setDisabilityInsurance, type: "number", ph: "e.g. 50", req: false },
           { label: "Notes (optional)", val: notes, set: setNotes, type: "text", ph: "", req: false },
         ] as { label: string; val: string; set: (v: string) => void; type: string; ph: string; req: boolean }[]).map(({ label, val, set, type, ph, req }) => (
           <div key={label} className="flex flex-col gap-1">

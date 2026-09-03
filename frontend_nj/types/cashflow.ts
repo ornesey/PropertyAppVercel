@@ -55,6 +55,7 @@ export interface Mortgage {
   interest_rate: number | null;
   balance: number | null;
   balance_date: string | null;
+  disability_insurance: number | null;
   monthly_interest: number | null;
   monthly_principal: number | null;
   notes: string | null;

@@ -3124,6 +3124,7 @@ class MortgageBody(BaseModel):
     interest_rate:   Optional[float] = None
     balance:         Optional[float] = None
     balance_date:    Optional[date]  = None
+    disability_insurance: Optional[float] = None
     notes:           Optional[str]   = None
 
 class MortgageUpdate(BaseModel):
@@ -3134,6 +3135,7 @@ class MortgageUpdate(BaseModel):
     interest_rate:   Optional[float] = None
     balance:         Optional[float] = None
     balance_date:    Optional[date]  = None
+    disability_insurance: Optional[float] = None
     notes:           Optional[str]   = None
 
 @app.get("/api/v1/rental/mortgages")
@@ -3147,10 +3149,12 @@ def get_mortgages(property_id: Optional[int] = None, org_id: int = Depends(get_o
         rows = conn.execute(sql(f"""
               SELECT m.mortgage_id, m.property_id, m.lender, m.monthly_payment,
                     m.term_start, m.term_end, m.interest_rate, m.balance, m.balance_date,
+                    m.disability_insurance,
                     CASE WHEN m.balance IS NOT NULL AND m.interest_rate IS NOT NULL
                         THEN ROUND((m.balance * m.interest_rate / 12)::numeric, 2) END AS monthly_interest,
                     CASE WHEN m.balance IS NOT NULL AND m.interest_rate IS NOT NULL
-                        THEN GREATEST(ROUND((m.monthly_payment - (m.balance * m.interest_rate / 12))::numeric, 2), 0) END AS monthly_principal,
+                        THEN GREATEST(ROUND((m.monthly_payment - (m.balance * m.interest_rate / 12)
+                                             - COALESCE(m.disability_insurance, 0))::numeric, 2), 0) END AS monthly_principal,
                     m.notes, m.created_at,
                    p.address AS property_address
             FROM rental.mortgages m
@@ -3166,10 +3170,10 @@ def create_mortgage(body: MortgageBody, org_id: int = Depends(get_org_id)):
         result = conn.execute(sql("""
             INSERT INTO rental.mortgages
                 (property_id, lender, monthly_payment, term_start, term_end, interest_rate,
-                 balance, balance_date, notes, org_id)
+                 balance, balance_date, disability_insurance, notes, org_id)
             VALUES
                 (:property_id, :lender, :monthly_payment, :term_start, :term_end, :interest_rate,
-                 :balance, :balance_date, :notes, :org_id)
+                 :balance, :balance_date, :disability_insurance, :notes, :org_id)
             RETURNING mortgage_id
         """), {**body.model_dump(), "org_id": org_id})
         mid = result.fetchone()[0]
@@ -3411,7 +3415,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
         # Active mortgages for the period
         mortgage_rows = conn.execute(sql(f"""
                  SELECT m.property_id, m.monthly_payment, m.term_start, m.term_end,
-                     m.balance, m.interest_rate
+                     m.balance, m.interest_rate, m.disability_insurance
             FROM rental.mortgages m
             WHERE m.org_id = :org_id
               AND m.term_start <= :pe
@@ -3430,7 +3434,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
                 if m["balance"] is not None and m["interest_rate"] is not None else None
             )
             mortgage_principal_inputs_by_prop.setdefault(pid, []).append(
-                (monthly_payment, monthly_interest)
+                (monthly_payment, monthly_interest, float(m["disability_insurance"] or 0))
             )
             if month:
                 payment = monthly_payment
@@ -3582,12 +3586,10 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
                 expenses.append(hist[tid])
 
         total_op  = round(sum(e["amount"] for e in expenses), 2)
-        disability_insurance = sum(
-            e["amount"] for e in expenses if e["expense_type_id"] == 37
-        ) / (12 if not month else 1)
         principal = round(sum(
-            max(monthly_payment - (monthly_interest or 0.0) - disability_insurance / len(mortgage_principal_inputs_by_prop[pid]), 0.0)
-            for monthly_payment, monthly_interest in mortgage_principal_inputs_by_prop.get(pid, [])
+            max(monthly_payment - (monthly_interest or 0.0) - disability_insurance_per_mortgage, 0.0)
+            for monthly_payment, monthly_interest, disability_insurance_per_mortgage in mortgage_principal_inputs_by_prop.get(pid, [])
+            if monthly_interest is not None
         ), 2) if mortgage_principal_inputs_by_prop.get(pid) else 0.0
         total_exp = round(total_op + mort, 2)
         net       = round(float(inc["income_collected"]) - total_exp, 2)
