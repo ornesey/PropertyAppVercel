@@ -28,8 +28,9 @@ export interface CashFlowPortfolio {
   income_collected: number;
   income_expected: number;
   mortgage_payments: number;
-  operating_expenses: number;
-  common_expenses: number;
+  property_taxes: number;
+  insurance: number;
+  other_operating_expenses: number;
   net_cash_flow: number;
 }
 

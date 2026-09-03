@@ -3606,6 +3606,13 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
     tot_expected   = round(sum(p["income_expected"]          for p in property_results), 2)
     tot_mortgages  = round(sum(p["mortgage_payment"]         for p in property_results), 2)
     tot_operating  = round(sum(p["total_operating_expenses"] for p in property_results), 2)
+    property_expenses = [expense for prop in property_results for expense in prop["expenses"]]
+    all_operating_expenses = property_expenses + common_expenses
+    property_taxes = round(sum(expense["amount"] for expense in all_operating_expenses
+                               if expense["expense_type_id"] == 29), 2)
+    insurance = round(sum(expense["amount"] for expense in all_operating_expenses
+                          if expense["expense_type_id"] == 28), 2)
+    other_operating = round(tot_operating + common_total - property_taxes - insurance, 2)
     net_portfolio  = round(tot_collected - tot_mortgages - tot_operating - common_total, 2)
 
     return {
@@ -3617,8 +3624,9 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
             "income_collected":   tot_collected,
             "income_expected":    tot_expected,
             "mortgage_payments":  tot_mortgages,
-            "operating_expenses": tot_operating,
-            "common_expenses":    common_total,
+            "property_taxes":     property_taxes,
+            "insurance":          insurance,
+            "other_operating_expenses": other_operating,
             "net_cash_flow":      net_portfolio,
         },
     }
