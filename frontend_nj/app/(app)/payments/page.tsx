@@ -476,7 +476,7 @@ function PaymentsPageInner() {
   const countOut    = useMemo(() => roll.filter((r) => r.payment_status !== "paid").length, [roll]);
 
   const isOutstanding = (r: RentRollRow) =>
-    Number(r.monthly_obligation ?? 0) > Number(r.amount_paid ?? 0);
+    Number(r.monthly_obligation ?? 0) + Number(r.adjustment_total ?? 0) > Number(r.amount_paid ?? 0);
 
   const visibleRoll = useMemo(
     () => outstandingOnly ? roll.filter(isOutstanding) : roll,
