@@ -1376,6 +1376,57 @@ class PaymentInstalment(BaseModel):
     notes:               Optional[str] = None
 
 
+class WaivePayment(BaseModel):
+    reason: Optional[str] = None
+
+
+@app.post("/api/v1/rental/ledger/{ledger_id}/waive")
+def waive_payment(ledger_id: int, body: WaivePayment, org_id: int = Depends(get_org_id)):
+    """Waive an unpaid ledger entry without recording a collection."""
+    with get_connection_for_org(org_id) as conn:
+        row = conn.execute(sql(
+            "SELECT status, notes FROM rental.rent_ledger WHERE ledger_id = :id"
+        ), {"id": ledger_id}).mappings().fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Ledger entry not found")
+        if row["status"] == "paid":
+            raise HTTPException(status_code=409, detail="A paid entry cannot be waived")
+
+        new_notes = row["notes"]
+        if body.reason and body.reason.strip():
+            waiver_note = f"Waived: {body.reason.strip()}"
+            new_notes = f"{new_notes} | {waiver_note}" if new_notes else waiver_note
+
+        conn.execute(sql("""
+            UPDATE rental.rent_ledger
+            SET status = 'waived', notes = :notes
+            WHERE ledger_id = :id
+        """), {"id": ledger_id, "notes": new_notes})
+        conn.commit()
+    return {"ledger_id": ledger_id, "status": "waived"}
+
+
+@app.post("/api/v1/rental/ledger/{ledger_id}/restore")
+def restore_payment(ledger_id: int, org_id: int = Depends(get_org_id)):
+    """Restore a waived ledger entry to pending without changing payment history."""
+    with get_connection_for_org(org_id) as conn:
+        row = conn.execute(sql(
+            "SELECT status FROM rental.rent_ledger WHERE ledger_id = :id"
+        ), {"id": ledger_id}).mappings().fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Ledger entry not found")
+        if row["status"] != "waived":
+            raise HTTPException(status_code=409, detail="Only waived entries can be restored")
+
+        conn.execute(sql("""
+            UPDATE rental.rent_ledger
+            SET status = 'pending'
+            WHERE ledger_id = :id
+        """), {"id": ledger_id})
+        conn.commit()
+    return {"ledger_id": ledger_id, "status": "pending"}
+
+
 @app.post("/api/v1/rental/ledger/{ledger_id}/pay")
 def record_payment_instalment(ledger_id: int, body: PaymentInstalment, org_id: int = Depends(get_org_id)):
     """Add a payment instalment — accumulates on top of any existing amount_paid.
@@ -1388,6 +1439,8 @@ def record_payment_instalment(ledger_id: int, body: PaymentInstalment, org_id: i
         """), {"id": ledger_id}).mappings().fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Ledger entry not found")
+        if row["status"] == "waived":
+            raise HTTPException(status_code=409, detail="A waived entry cannot receive a payment")
 
         net_due   = float(row["amount_due"]) + float(row["adjustment_total"])
         new_total = float(row["already_paid"]) + body.amount
@@ -1564,6 +1617,7 @@ def get_rental_dashboard(org_id: int = Depends(get_org_id)):
             SELECT COALESCE(SUM(amount_paid), 0)
             FROM rental.rent_ledger
             WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE)
+              AND DATE_TRUNC('year', due_date) = DATE_TRUNC('year', CURRENT_DATE)
               AND status IN ('paid', 'partial')
         """)).scalar()
 
@@ -1571,6 +1625,8 @@ def get_rental_dashboard(org_id: int = Depends(get_org_id)):
             SELECT COALESCE(SUM(amount_due), 0)
             FROM rental.rent_ledger
             WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE)
+            AND DATE_TRUNC('year', due_date) = DATE_TRUNC('year', CURRENT_DATE)
+            AND status <> 'waived'
         """)).scalar()
 
         overdue_tasks = conn.execute(sql("""
@@ -1599,9 +1655,16 @@ def get_rental_dashboard(org_id: int = Depends(get_org_id)):
         """)).scalar()
 
         outstanding_payments = conn.execute(sql("""
-            SELECT COUNT(*) FROM rental.rent_ledger
-            WHERE amount_due > COALESCE(amount_paid, 0)
-              AND status NOT IN ('waived')
+            SELECT
+                COUNT(*)
+            FROM
+                rental.rent_ledger rl
+                LEFT JOIN rental.rent_adjustments ra ON rl.ledger_id = ra.ledger_id
+            WHERE
+                rl.amount_due + COALESCE(ra.amount, 0) > COALESCE(rl.amount_paid, 0)
+                AND DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE)
+                AND DATE_TRUNC('year', due_date) = DATE_TRUNC('year', CURRENT_DATE)
+                AND status NOT IN ('waived')
         """)).scalar()
 
         active_tenants = conn.execute(sql("""

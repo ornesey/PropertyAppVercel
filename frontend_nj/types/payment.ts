@@ -15,7 +15,7 @@ export interface RentRollRow {
   amount_due: number | null;
   amount_paid: number | null;
   paid_date: string | null;
-  payment_status: string | null;
+  payment_status: "paid" | "partial" | "promised" | "late" | "pending" | "waived" | "not_generated" | null;
   promised_date: string | null;
   promised_amount: number | null;
   payment_method_label: string | null;

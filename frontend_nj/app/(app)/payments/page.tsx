@@ -26,11 +26,12 @@ const STATUS_STYLE: Record<string, string> = {
   promised:      "bg-yellow-100 text-yellow-700",
   late:          "bg-red-100 text-red-700",
   pending:       "bg-gray-100 text-gray-500",
+  waived:        "bg-gray-100 text-gray-500",
   not_generated: "bg-gray-50 text-gray-400",
 };
 
 const STATUS_ICON: Record<string, string> = {
-  paid: "🟢", partial: "🟠", promised: "🟡", late: "🔴", pending: "⚪", not_generated: "⬜",
+  paid: "🟢", partial: "🟠", promised: "🟡", late: "🔴", pending: "⚪", waived: "⚫", not_generated: "⬜",
 };
 
 function fmt(n: number | null | undefined) {
@@ -135,6 +136,8 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
   const [adjAmt, setAdjAmt]           = useState("");
   const [adjReason, setAdjReason]     = useState("");
   const [addingAdj, setAddingAdj]     = useState(false);
+  const [waiving, setWaiving]         = useState(false);
+  const [restoring, setRestoring]     = useState(false);
 
   const status: string = row.payment_status ?? "not_generated";
   const icon    = STATUS_ICON[status] ?? "⬜";
@@ -216,6 +219,23 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
     onChanged();
   }
 
+  async function waivePayment() {
+    if (!row.ledger_id || !window.confirm("Waive this unpaid payment? It will no longer count as outstanding.")) return;
+    const reason = window.prompt("Reason for waiving (optional):") ?? "";
+    setWaiving(true);
+    await api("POST", `/api/v1/rental/ledger/${row.ledger_id}/waive`, { reason: reason || null });
+    setWaiving(false);
+    onChanged();
+  }
+
+  async function restorePayment() {
+    if (!row.ledger_id || !window.confirm("Restore this payment to pending?")) return;
+    setRestoring(true);
+    await api("POST", `/api/v1/rental/ledger/${row.ledger_id}/restore`);
+    setRestoring(false);
+    onChanged();
+  }
+
   const hasAdjustments = adjustTotal !== 0;
 
   return (
@@ -269,6 +289,11 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
               🟡 Promised — see Promise tab for schedule
             </div>
           )}
+          {status === "waived" && (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-600">
+              ⚫ Waived — this payment is excluded from outstanding balances.
+            </div>
+          )}
           {isLate && status !== "paid" && (
             <div className="bg-red-50 border border-red-100 rounded-lg px-3 py-2 text-sm text-red-700">
               🔴 LATE — {fmt(netDue)} was due {selMonth}-01
@@ -279,17 +304,23 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
           )}
 
           {/* Action tabs */}
-          {row.ledger_id && status !== "paid" && (
+          {row.ledger_id && status !== "paid" && status !== "waived" && (
             <div>
-              <div className="flex gap-1 border-b border-gray-100 mb-3">
-                {(["pay", "promise", "adjust", "history"] as const).map((t) => (
-                  <button key={t} onClick={() => switchTab(t)}
-                    className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
-                      activeTab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-400 hover:text-gray-600"
-                    }`}>
-                    {t === "pay" ? "Record Payment" : t === "promise" ? "Promises" : t === "adjust" ? "Adjustments" : "History"}
-                  </button>
-                ))}
+              <div className="flex items-center justify-between gap-3 border-b border-gray-100 mb-3">
+                <div className="flex gap-1">
+                  {(["pay", "promise", "adjust", "history"] as const).map((t) => (
+                    <button key={t} onClick={() => switchTab(t)}
+                      className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                        activeTab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-400 hover:text-gray-600"
+                      }`}>
+                      {t === "pay" ? "Record Payment" : t === "promise" ? "Promises" : t === "adjust" ? "Adjustments" : "History"}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={waivePayment} disabled={waiving}
+                  className="px-3 py-1.5 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50">
+                  {waiving ? "Waiving…" : "Waive Payment"}
+                </button>
               </div>
 
               {/* Pay tab */}
@@ -414,6 +445,13 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
               {showHistory && <div className="mt-2"><TransactionHistory ledgerId={row.ledger_id} /></div>}
             </div>
           )}
+
+          {row.ledger_id && status === "waived" && (
+            <button onClick={restorePayment} disabled={restoring}
+              className="px-3 py-1.5 text-xs text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50">
+              {restoring ? "Restoring…" : "Restore to Pending"}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -470,12 +508,13 @@ function PaymentsPageInner() {
   }
 
   // Summary stats
-  const totalDue    = useMemo(() => roll.reduce((s, r) => s + Number(r.monthly_obligation), 0), [roll]);
+  const totalDue    = useMemo(() => roll.reduce((s, r) => s + (r.payment_status === "waived" ? 0 : Number(r.monthly_obligation)), 0), [roll]);
   const totalPaid   = useMemo(() => roll.reduce((s, r) => s + Number(r.amount_paid ?? 0), 0), [roll]);
   const countPaid   = useMemo(() => roll.filter((r) => r.payment_status === "paid").length, [roll]);
-  const countOut    = useMemo(() => roll.filter((r) => r.payment_status !== "paid").length, [roll]);
+  const countOut    = useMemo(() => roll.filter((r) => r.payment_status !== "paid" && r.payment_status !== "waived").length, [roll]);
 
   const isOutstanding = (r: RentRollRow) =>
+    r.payment_status !== "waived" &&
     Number(r.monthly_obligation ?? 0) + Number(r.adjustment_total ?? 0) > Number(r.amount_paid ?? 0);
 
   const visibleRoll = useMemo(
