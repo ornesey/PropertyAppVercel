@@ -1433,9 +1433,10 @@ def record_payment_instalment(ledger_id: int, body: PaymentInstalment, org_id: i
     Automatically sets status to paid/partial based on total collected vs amount_due."""
     with get_connection_for_org(org_id) as conn:
         row = conn.execute(sql("""
-            SELECT rl.amount_due, COALESCE(rl.amount_paid, 0) AS already_paid,
-                   COALESCE((SELECT SUM(amount) FROM rental.rent_adjustments WHERE ledger_id = :id), 0) AS adjustment_total
-            FROM rental.rent_ledger rl WHERE rl.ledger_id = :id
+    SELECT rl.amount_due, rl.status,
+         COALESCE(rl.amount_paid, 0) AS already_paid,
+         COALESCE((SELECT SUM(amount) FROM rental.rent_adjustments WHERE ledger_id = :id), 0) AS adjustment_total
+FROM rental.rent_ledger rl WHERE rl.ledger_id = :id
         """), {"id": ledger_id}).mappings().fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Ledger entry not found")
