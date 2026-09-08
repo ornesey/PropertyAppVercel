@@ -26,7 +26,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
 
   if (res.status === 401) {
     clearToken();
-    window.location.href = "/login";
+    window.location.replace("/login");
     throw new Error("Unauthorized");
   }
 
