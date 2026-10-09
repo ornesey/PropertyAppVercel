@@ -9,6 +9,8 @@ interface DashboardData {
   spaces_occupied: number;
   occupancy_rate: number;
   rent_collected_this_month: number;
+  additional_income_collected_this_month: number;
+  revenue_collected_this_month: number;
   rent_expected_this_month: number;
   active_tenant_count: number;
   outstanding_payment_count: number;
@@ -25,7 +27,7 @@ function MetricCard({ label, value, sub }: { label: string; value: string; sub?:
     <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 flex flex-col gap-1">
       <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">{label}</p>
       <p className="text-2xl font-bold text-gray-900">{value}</p>
-      {sub && <p className="text-xs text-gray-400">{sub}</p>}
+      {sub && <p className="text-xs text-gray-400 whitespace-pre-line">{sub}</p>}
     </div>
   );
 }
@@ -88,9 +90,9 @@ export default function DashboardPage() {
           sub={`${data.spaces_occupied} of ${data.spaces_total} spaces`}
         />
         <MetricCard
-          label="Rent Collected"
-          value={`$${data.rent_collected_this_month.toLocaleString()}`}
-          sub={`of $${data.rent_expected_this_month.toLocaleString()} expected this month`}
+          label="Revenue Collected"
+          value={`$${data.revenue_collected_this_month.toLocaleString()}`}
+          sub={`Rent $${data.rent_collected_this_month.toLocaleString()} + additional $${data.additional_income_collected_this_month.toLocaleString()}\n$${data.rent_expected_this_month.toLocaleString()} rent expected`}
         />
         <MetricCard
           label="Active Tenants"

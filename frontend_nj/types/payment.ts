@@ -52,3 +52,24 @@ export interface Transaction {
   payment_method_label: string | null;
   notes: string | null;
 }
+
+export interface AdditionalIncomePayment {
+  additional_income_payment_id: number;
+  lease_id: number;
+  tenant_id: number;
+  income_type: string;
+  amount: number;
+  paid_date: string;
+  payment_method_code: string | null;
+  payment_method_label: string | null;
+  notes: string | null;
+  tenant_name: string;
+  address: string;
+  unit_number: string;
+  space_name: string;
+}
+
+export interface AdditionalIncomeType {
+  additional_income_type_id: number;
+  name: string;
+}

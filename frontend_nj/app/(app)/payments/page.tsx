@@ -3,7 +3,10 @@
 import { useEffect, useState, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
-import type { RentRollRow, PaymentMethod, Transaction, Promise as PayPromise, Adjustment } from "@/types/payment";
+import type {
+  RentRollRow, PaymentMethod, Transaction, Promise as PayPromise, Adjustment,
+  AdditionalIncomePayment, AdditionalIncomeType,
+} from "@/types/payment";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -458,6 +461,176 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
   );
 }
 
+interface IncomeLeaseMember {
+  lease_id: number;
+  tenant_id: number;
+  first_name: string;
+  last_name: string;
+}
+
+interface IncomeLease {
+  lease_id: number;
+  address: string;
+  unit_number: string;
+  space_name: string;
+  members: IncomeLeaseMember[];
+}
+
+function AdditionalIncomeTab({ month, methods }: { month: string; methods: PaymentMethod[] }) {
+  const [payments, setPayments] = useState<AdditionalIncomePayment[]>([]);
+  const [incomeTypes, setIncomeTypes] = useState<AdditionalIncomeType[]>([]);
+  const [members, setMembers] = useState<{ key: string; lease_id: number; tenant_id: number; label: string }[]>([]);
+  const [memberKey, setMemberKey] = useState("");
+  const [incomeTypeId, setIncomeTypeId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [paidDate, setPaidDate] = useState(today);
+  const [method, setMethod] = useState("");
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let current = true;
+    setLoading(true);
+    Promise.all([
+      api<AdditionalIncomePayment[]>("GET", `/api/v1/rental/additional-income?month=${month}`),
+      api<IncomeLease[]>("GET", "/api/v1/rental/leases/with-members"),
+      api<AdditionalIncomeType[]>("GET", "/api/v1/rental/ref/additional-income-types"),
+    ]).then(([rows, leases, types]) => {
+      if (!current) return;
+      setPayments(rows);
+      setIncomeTypes(types);
+      setIncomeTypeId((selected) => selected || String(
+        types.find((type) => type.name === "Internet")?.additional_income_type_id ??
+        types[0]?.additional_income_type_id ?? ""
+      ));
+      const options = leases.flatMap((lease) => lease.members.map((tenant) => ({
+        key: `${lease.lease_id}:${tenant.tenant_id}`,
+        lease_id: lease.lease_id,
+        tenant_id: tenant.tenant_id,
+        label: `${lease.address} · Unit ${lease.unit_number} · ${lease.space_name} — ${tenant.first_name} ${tenant.last_name}`,
+      })));
+      setMembers(options);
+      setMemberKey((selected) => selected || options[0]?.key || "");
+    }).catch((err: unknown) => {
+      if (current) setError(err instanceof Error ? err.message : "Failed to load additional income");
+    }).finally(() => {
+      if (current) setLoading(false);
+    });
+    return () => { current = false; };
+  }, [month]);
+
+  useEffect(() => {
+    setPaidDate((selected) => selected.slice(0, 7) === month
+      ? selected
+      : month === currentMonth ? today : `${month}-01`);
+  }, [month]);
+
+  async function recordIncome(e: React.FormEvent) {
+    e.preventDefault();
+    const selected = members.find((member) => member.key === memberKey);
+    if (!selected) { setError("Select a lease and tenant."); return; }
+    setSaving(true);
+    setError("");
+    try {
+      await api("POST", "/api/v1/rental/additional-income", {
+        lease_id: selected.lease_id,
+        tenant_id: selected.tenant_id,
+        income_type_id: Number(incomeTypeId),
+        amount: Number(amount),
+        paid_date: paidDate,
+        payment_method_code: method || null,
+        notes: notes || null,
+      });
+      setAmount("");
+      setNotes("");
+      const rows = await api<AdditionalIncomePayment[]>("GET", `/api/v1/rental/additional-income?month=${month}`);
+      setPayments(rows);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to record payment");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const collected = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-4 sm:max-w-md">
+        <div className="bg-white border border-gray-100 rounded-lg p-4">
+          <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Additional income</p>
+          <p className="text-xl font-bold text-gray-900 mt-1">{fmt(collected)}</p>
+        </div>
+        <div className="bg-white border border-gray-100 rounded-lg p-4">
+          <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Receipts</p>
+          <p className="text-xl font-bold text-gray-900 mt-1">{payments.length}</p>
+        </div>
+      </div>
+
+      <form onSubmit={recordIncome} className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
+        <h2 className="text-sm font-semibold text-gray-800">Record additional income</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <Select label="Tenant / lease" value={memberKey} onChange={setMemberKey}
+            options={members.map((member) => ({ value: member.key, label: member.label }))} />
+          <Select label="Income type" value={incomeTypeId} onChange={setIncomeTypeId}
+            options={incomeTypes.map((type) => ({
+              value: String(type.additional_income_type_id),
+              label: type.name,
+            }))} />
+          <Input label="Amount ($)" value={amount} onChange={setAmount} type="number" min="0.01" step="0.01" />
+          <Input label="Date received" value={paidDate} onChange={setPaidDate} type="date" />
+          <Select label="Method" value={method} onChange={setMethod}
+            options={[{ value: "", label: "Select method" }, ...methods.map((item) => ({ value: item.code, label: item.label }))]} />
+          <Input label="Notes" value={notes} onChange={setNotes} />
+        </div>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <button type="submit" disabled={saving || !members.length || !incomeTypeId || !amount}
+          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50">
+          {saving ? "Saving…" : "Record receipt"}
+        </button>
+      </form>
+
+      {loading ? (
+        <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading…</div>
+      ) : payments.length === 0 ? (
+        <p className="text-sm text-gray-400">No additional-income receipts for {month}.</p>
+      ) : (
+        <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+              <tr>
+                <th className="px-4 py-3">Date</th>
+                <th className="px-4 py-3">Tenant / property</th>
+                <th className="px-4 py-3">Type</th>
+                <th className="px-4 py-3">Method</th>
+                <th className="px-4 py-3 text-right">Amount</th>
+                <th className="px-4 py-3">Notes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 text-gray-900">
+              {payments.map((payment) => (
+                <tr key={payment.additional_income_payment_id}>
+                  <td className="px-4 py-3 whitespace-nowrap">{String(payment.paid_date).slice(0, 10)}</td>
+                  <td className="px-4 py-3 text-gray-900">
+                    <div className="font-medium text-gray-800">{payment.tenant_name}</div>
+                    <div className="text-xs text-gray-600">{payment.address} · Unit {payment.unit_number} · {payment.space_name}</div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-900">{payment.income_type}</td>
+                  <td className="px-4 py-3 text-gray-700">{payment.payment_method_label ?? "—"}</td>
+                  <td className="px-4 py-3 text-right font-semibold text-gray-900">{fmt(Number(payment.amount))}</td>
+                  <td className="px-4 py-3 text-gray-700">{payment.notes ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function PaymentsPageInner() {
@@ -470,6 +643,7 @@ function PaymentsPageInner() {
   const [generating, setGenerating] = useState(false);
   const [genMsg, setGenMsg]       = useState("");
   const [outstandingOnly, setOutstandingOnly] = useState(false);
+  const [activeTab, setActiveTab] = useState<"rent" | "additional">("rent");
 
   async function loadRoll(month: string) {
     setLoading(true);
@@ -539,17 +713,28 @@ function PaymentsPageInner() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-gray-900">Payments</h1>
 
+      <div className="flex gap-1 border-b border-gray-200">
+        {(["rent", "additional"] as const).map((tab) => (
+          <button key={tab} onClick={() => setActiveTab(tab)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === tab ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}>
+            {tab === "rent" ? "Rent" : "Additional Income"}
+          </button>
+        ))}
+      </div>
+
       {/* Month selector + generate + filter */}
       <div className="flex items-center gap-3 flex-wrap">
         <select value={selMonth} onChange={(e) => changeMonth(e.target.value)}
           className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
           {months.map((m) => <option key={m}>{m}</option>)}
         </select>
-        <button onClick={generate} disabled={generating}
+        {activeTab === "rent" && <button onClick={generate} disabled={generating}
           className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white text-sm rounded-lg hover:bg-gray-700 disabled:opacity-50">
           ⚡ {generating ? "Generating…" : "Generate"}
-        </button>
-        <button
+        </button>}
+        {activeTab === "rent" && <button
           onClick={() => setOutstandingOnly((v) => !v)}
           className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg border cursor-pointer transition-colors ${
             outstandingOnly
@@ -563,12 +748,12 @@ function PaymentsPageInner() {
             {outstandingOnly ? "✓" : ""}
           </span>
           Outstanding Only
-        </button>
-        {genMsg && <span className="text-sm text-gray-600">{genMsg}</span>}
+        </button>}
+        {activeTab === "rent" && genMsg && <span className="text-sm text-gray-600">{genMsg}</span>}
       </div>
 
       {/* Summary metrics */}
-      {roll.length > 0 && (
+      {activeTab === "rent" && roll.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {[
             { label: "Expected", value: fmt(totalDue) },
@@ -585,7 +770,9 @@ function PaymentsPageInner() {
       )}
 
       {/* Rent roll */}
-      {loading ? (
+      {activeTab === "additional" ? (
+        <AdditionalIncomeTab month={selMonth} methods={methods} />
+      ) : loading ? (
         <div className="flex items-center justify-center h-40 text-gray-400 text-sm">Loading…</div>
       ) : roll.length === 0 ? (
         <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center text-sm text-gray-400">

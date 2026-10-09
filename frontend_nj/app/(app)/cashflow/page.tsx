@@ -208,7 +208,7 @@ function PropertyCard({ prop, year, month, onUpdated }: {
         <div className="space-y-0.5 min-w-0">
           <span className="font-semibold text-gray-900">{prop.address}</span>
           <div className="flex items-center gap-4 text-xs text-gray-400 flex-wrap">
-            <span>Collected {fmt(prop.income_collected)} / Expected {fmt(prop.income_expected)}</span>
+            <span>Collected {fmt(prop.income_collected)} (rent {fmt(prop.rent_income_collected)} + additional {fmt(prop.additional_income_collected)}) / Rent expected {fmt(prop.income_expected)}</span>
             {prop.mortgage_payment > 0 && <span>Mortgage {fmt(prop.mortgage_payment)}</span>}
             {prop.total_operating_expenses > 0 && <span>Expenses {fmt(prop.total_operating_expenses)}</span>}
           </div>
@@ -225,13 +225,17 @@ function PropertyCard({ prop, year, month, onUpdated }: {
         <div className="border-t border-gray-100 px-5 py-4">
           <div className="divide-y divide-gray-50">
             <div className="flex items-center justify-between py-1.5 text-sm">
-              <span className="text-gray-500 font-medium">Rental Income</span>
+              <span className="text-gray-500 font-medium">Rent Collected</span>
               <div className="flex items-center gap-2">
-                {prop.income_expected !== prop.income_collected && (
+                {prop.income_expected !== prop.rent_income_collected && (
                   <span className="text-xs text-gray-400">/ {fmt(prop.income_expected)} expected</span>
                 )}
-                <span className="font-semibold text-green-700 w-24 text-right">{fmt(prop.income_collected)}</span>
+                <span className="font-semibold text-green-700 w-24 text-right">{fmt(prop.rent_income_collected)}</span>
               </div>
+            </div>
+            <div className="flex items-center justify-between py-1.5 text-sm">
+              <span className="text-gray-600">Additional Income</span>
+              <span className="font-medium text-green-700 w-24 text-right">{fmt(prop.additional_income_collected)}</span>
             </div>
             {prop.mortgage_payment > 0 && (
               <div className="flex items-center justify-between py-1.5 text-sm">
@@ -294,8 +298,8 @@ function ReportTab({ year, month, propFilter }: {
     <div className="space-y-6">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {[
-          { label: "Rent", value: fmt(portfolio.income_collected),
-            sub: portfolio.income_expected !== portfolio.income_collected ? `${fmt(portfolio.income_expected)} expected` : null,
+          { label: "Revenue", value: fmt(portfolio.income_collected),
+            sub: `Rent ${fmt(portfolio.rent_income_collected)} · Additional ${fmt(portfolio.additional_income_collected)} · ${fmt(portfolio.income_expected)} rent expected`,
             color: "text-gray-900" },
           { label: "Mortgage", value: fmt(portfolio.mortgage_payments), sub: null, color: "text-gray-900" },
           { label: "Tax", value: fmt(portfolio.property_taxes), sub: null, color: "text-gray-900" },

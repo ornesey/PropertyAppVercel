@@ -9,6 +9,8 @@ export interface CashFlowProperty {
   property_id: number;
   address: string;
   income_collected: number;
+  rent_income_collected: number;
+  additional_income_collected: number;
   income_expected: number;
   mortgage_payment: number;
   monthly_principal_payment: number;
@@ -27,6 +29,8 @@ export interface CashFlowCommonExpense {
 
 export interface CashFlowPortfolio {
   income_collected: number;
+  rent_income_collected: number;
+  additional_income_collected: number;
   income_expected: number;
   mortgage_payments: number;
   property_taxes: number;

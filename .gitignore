@@ -22,5 +22,6 @@ Thumbs.db
 
 # db scripts
 *.sql
+!backend/db/scripts/migration_v10_additional_income_types.sql
 &.pgerd
 public_visitor_log

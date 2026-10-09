@@ -1597,6 +1597,98 @@ def generate_month_ledger(month: str, org_id: int = Depends(get_org_id)):
     return {"month": month, "created": created}
 
 
+class AdditionalIncomePaymentBody(BaseModel):
+    lease_id: int
+    tenant_id: int
+    income_type_id: int
+    amount: float
+    paid_date: date
+    payment_method_code: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@app.get("/api/v1/rental/additional-income")
+def get_additional_income_payments(month: Optional[str] = None, org_id: int = Depends(get_org_id)):
+    filters = ["aip.org_id = :org_id"]
+    params: dict[str, Any] = {"org_id": org_id}
+    if month:
+        try:
+            period_start = date.fromisoformat(f"{month}-01")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+        period_end = date(period_start.year + (period_start.month == 12), period_start.month % 12 + 1, 1)
+        filters.extend(["aip.paid_date >= :period_start", "aip.paid_date < :period_end"])
+        params.update({"period_start": period_start, "period_end": period_end})
+
+    with get_connection_for_org(org_id) as conn:
+        rows = conn.execute(sql(f"""
+            SELECT aip.additional_income_payment_id, aip.lease_id, aip.tenant_id,
+                     ait.name AS income_type, aip.amount, aip.paid_date,
+                   aip.payment_method_code, pm.label AS payment_method_label, aip.notes,
+                   t.first_name || ' ' || t.last_name AS tenant_name,
+                   p.address, u.unit_number, rs.space_name
+            FROM rental.additional_income_payments aip
+            JOIN rental.lease_members lm
+              ON lm.lease_id = aip.lease_id AND lm.tenant_id = aip.tenant_id
+            JOIN rental.tenants t ON t.tenant_id = aip.tenant_id
+            JOIN rental.leases l ON l.lease_id = aip.lease_id
+            JOIN rental.rentable_spaces rs ON rs.space_id = l.space_id
+            JOIN rental.units u ON u.unit_id = rs.unit_id
+            JOIN rental.properties p ON p.property_id = u.property_id
+            LEFT JOIN rental.ref_payment_methods pm ON pm.code = aip.payment_method_code
+                        JOIN rental.ref_additional_income_types ait
+                            ON ait.additional_income_type_id = aip.income_type_id
+                         AND ait.org_id = aip.org_id
+            WHERE {' AND '.join(filters)}
+            ORDER BY aip.paid_date DESC, aip.created_at DESC
+        """), params).mappings().all()
+    return [dict(row) for row in rows]
+
+
+@app.post("/api/v1/rental/additional-income", status_code=201)
+def create_additional_income_payment(body: AdditionalIncomePaymentBody, org_id: int = Depends(get_org_id)):
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be greater than zero")
+
+    with get_connection_for_org(org_id) as conn:
+        income_type = conn.execute(sql("""
+            SELECT 1
+            FROM rental.ref_additional_income_types
+            WHERE additional_income_type_id = :income_type_id
+              AND org_id = :org_id
+        """), {"income_type_id": body.income_type_id, "org_id": org_id}).fetchone()
+        if not income_type:
+            raise HTTPException(status_code=400, detail="Invalid additional income type")
+
+        member = conn.execute(sql("""
+            SELECT 1
+            FROM rental.lease_members lm
+            JOIN rental.leases l ON l.lease_id = lm.lease_id
+            WHERE lm.lease_id = :lease_id
+              AND lm.tenant_id = :tenant_id
+              AND lm.org_id = :org_id
+              AND l.org_id = :org_id
+        """), {"lease_id": body.lease_id, "tenant_id": body.tenant_id, "org_id": org_id}).fetchone()
+        if not member:
+            raise HTTPException(status_code=404, detail="Lease member not found")
+
+        result = conn.execute(sql("""
+            INSERT INTO rental.additional_income_payments
+                (lease_id, tenant_id, income_type_id, amount, paid_date,
+                 payment_method_code, notes, org_id)
+            VALUES
+                (:lease_id, :tenant_id, :income_type_id, :amount, :paid_date,
+                 :payment_method_code, :notes, :org_id)
+            RETURNING additional_income_payment_id
+        """), {
+            **body.model_dump(),
+            "org_id": org_id,
+        })
+        payment_id = result.fetchone()[0]
+        conn.commit()
+    return {"additional_income_payment_id": payment_id}
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/rental/dashboard")
@@ -1621,6 +1713,14 @@ def get_rental_dashboard(org_id: int = Depends(get_org_id)):
               AND DATE_TRUNC('year', due_date) = DATE_TRUNC('year', CURRENT_DATE)
               AND status IN ('paid', 'partial')
         """)).scalar()
+
+        additional_income_collected = conn.execute(sql("""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM rental.additional_income_payments
+            WHERE paid_date >= DATE_TRUNC('month', CURRENT_DATE)::date
+              AND paid_date < (DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month')::date
+              AND org_id = :org_id
+        """), {"org_id": org_id}).scalar()
 
         rent_expected = conn.execute(sql("""
             SELECT COALESCE(SUM(amount_due), 0)
@@ -1680,6 +1780,8 @@ def get_rental_dashboard(org_id: int = Depends(get_org_id)):
         "spaces_occupied":           spaces_occupied,
         "occupancy_rate":            round(spaces_occupied / spaces_total * 100, 1) if spaces_total else 0,
         "rent_collected_this_month": float(rent_collected or 0),
+        "additional_income_collected_this_month": float(additional_income_collected or 0),
+        "revenue_collected_this_month": float(rent_collected or 0) + float(additional_income_collected or 0),
         "rent_expected_this_month":  float(rent_expected or 0),
         "overdue_maintenance_tasks": overdue_tasks,
         "open_maintenance_requests": open_requests,
@@ -2384,6 +2486,16 @@ def get_payment_methods():
             ORDER BY label
         """)).mappings().all()
     return [dict(r) for r in rows]
+
+@app.get("/api/v1/rental/ref/additional-income-types")
+def get_additional_income_types(org_id: int = Depends(get_org_id)):
+    with get_connection_for_org(org_id) as conn:
+        rows = conn.execute(sql("""
+            SELECT additional_income_type_id, name
+            FROM rental.ref_additional_income_types
+            ORDER BY name
+        """)).mappings().all()
+    return [dict(row) for row in rows]
 
 class RefNameBody(BaseModel):
     name: str
@@ -3444,6 +3556,30 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
         """), {**base, "ps": period_start, "pe": period_end}).mappings().all()
         income_map = {r["property_id"]: dict(r) for r in income_rows}
 
+        additional_income_rows = conn.execute(sql(f"""
+            SELECT p.property_id, COALESCE(SUM(aip.amount), 0) AS additional_income_collected
+            FROM rental.properties p
+            LEFT JOIN rental.units u ON u.property_id = p.property_id
+            LEFT JOIN rental.rentable_spaces rs ON rs.unit_id = u.unit_id
+            LEFT JOIN rental.leases l ON l.space_id = rs.space_id
+            LEFT JOIN rental.additional_income_payments aip
+                ON aip.lease_id = l.lease_id
+               AND aip.paid_date BETWEEN :ps AND :pe
+               AND aip.org_id = :org_id
+            WHERE p.org_id = :org_id {prop_extra}
+            GROUP BY p.property_id
+        """), {**base, "ps": period_start, "pe": period_end}).mappings().all()
+        additional_income_map = {
+            r["property_id"]: float(r["additional_income_collected"])
+            for r in additional_income_rows
+        }
+        for pid, income in income_map.items():
+            rent_collected = float(income["income_collected"])
+            extra_collected = additional_income_map.get(pid, 0.0)
+            income["rent_income_collected"] = rent_collected
+            income["additional_income_collected"] = extra_collected
+            income["income_collected"] = rent_collected + extra_collected
+
         # Actual operating expenses per property+type (excluding Mortgage Interest)
         actual_rows = conn.execute(sql(f"""
             SELECT e.property_id, e.expense_type_id,
@@ -3623,7 +3759,10 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
     property_results = []
     for prop in properties:
         pid = prop["property_id"]
-        inc  = income_map.get(pid, {"income_collected": 0, "income_expected": 0})
+        inc  = income_map.get(pid, {
+            "income_collected": 0, "rent_income_collected": 0,
+            "additional_income_collected": 0, "income_expected": 0,
+        })
         mort = round(mortgage_by_prop.get(pid, 0.0), 2)
         mi   = mi_map.get(pid, 0.0)
 
@@ -3662,6 +3801,8 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
             "property_id":               pid,
             "address":                   prop["address"],
             "income_collected":          float(inc["income_collected"]),
+            "rent_income_collected":     float(inc["rent_income_collected"]),
+            "additional_income_collected": float(inc["additional_income_collected"]),
             "income_expected":           float(inc["income_expected"]),
             "mortgage_payment":          mort,
             "monthly_principal_payment": principal,
@@ -3701,6 +3842,7 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
 
     # Portfolio totals
     tot_collected  = round(sum(p["income_collected"]         for p in property_results), 2)
+    tot_additional_income = round(sum(p["additional_income_collected"] for p in property_results), 2)
     tot_expected   = round(sum(p["income_expected"]          for p in property_results), 2)
     tot_mortgages  = round(sum(p["mortgage_payment"]         for p in property_results), 2)
     tot_operating  = round(sum(p["total_operating_expenses"] for p in property_results), 2)
@@ -3721,6 +3863,8 @@ def get_cashflow(year: int, month: Optional[int] = None, property_id: Optional[i
         "common_total":    common_total,
         "portfolio": {
             "income_collected":   tot_collected,
+            "rent_income_collected": round(tot_collected - tot_additional_income, 2),
+            "additional_income_collected": tot_additional_income,
             "income_expected":    tot_expected,
             "mortgage_payments":  tot_mortgages,
             "property_taxes":     property_taxes,
