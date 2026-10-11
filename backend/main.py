@@ -1512,6 +1512,7 @@ def get_rent_roll(month: str, org_id: int = Depends(get_org_id)):
     This drives the rent roll view — one row per tenant per month."""
     year, mon = int(month.split("-")[0]), int(month.split("-")[1])
     due_date = date(year, mon, 1)
+    next_month_start = date(year + (mon == 12), mon % 12 + 1, 1)
 
     with get_connection_for_org(org_id) as conn:
         rows = conn.execute(sql("""
@@ -1556,11 +1557,15 @@ def get_rent_roll(month: str, org_id: int = Depends(get_org_id)):
                 GROUP BY ledger_id
             ) ra ON ra.ledger_id = rl.ledger_id
             WHERE (l.status_code IN (1, 2) OR l.status = 'active')
-              AND l.start_date <= :due_date
+              AND l.start_date < :next_month_start
               AND (l.end_date IS NULL OR l.end_date >= :due_date)
               AND lm.monthly_obligation > 0
             ORDER BY p.address, u.unit_number, rs.space_name, t.last_name
-        """), {"month_start": due_date, "due_date": due_date}).mappings().all()
+        """), {
+            "month_start": due_date,
+            "due_date": due_date,
+            "next_month_start": next_month_start,
+        }).mappings().all()
 
     return [dict(r) for r in rows]
 
@@ -1570,15 +1575,17 @@ def generate_month_ledger(month: str, org_id: int = Depends(get_org_id)):
     """Generate rent_ledger rows for all active lease members for a given YYYY-MM."""
     year, mon = int(month.split("-")[0]), int(month.split("-")[1])
     due_date = date(year, mon, 1)
+    next_month_start = date(year + (mon == 12), mon % 12 + 1, 1)
+    days_in_month = (next_month_start - due_date).days
     with get_connection_for_org(org_id) as conn:
         members = conn.execute(sql("""
-            SELECT lm.lease_id, lm.tenant_id, lm.monthly_obligation
+            SELECT lm.lease_id, lm.tenant_id, lm.monthly_obligation, l.start_date
             FROM rental.lease_members lm
             JOIN rental.leases l ON l.lease_id = lm.lease_id
             WHERE l.status = 'active'
-              AND l.start_date <= :due_date
+              AND l.start_date < :next_month_start
               AND (l.end_date IS NULL OR l.end_date >= :due_date)
-        """), {"due_date": due_date}).mappings().all()
+        """), {"due_date": due_date, "next_month_start": next_month_start}).mappings().all()
 
         created = 0
         for m in members:
@@ -1587,14 +1594,21 @@ def generate_month_ledger(month: str, org_id: int = Depends(get_org_id)):
                 WHERE lease_id = :lease_id AND tenant_id = :tenant_id AND due_date = :due_date
             """), {"lease_id": m["lease_id"], "tenant_id": m["tenant_id"], "due_date": due_date}).fetchone()
             if not exists:
+                start_date = m["start_date"]
+                charge_start = max(start_date, due_date)
+                billable_days = (next_month_start - charge_start).days
+                amount_due = round(float(m["monthly_obligation"]) * billable_days / days_in_month, 2)
+                notes = None
+                if start_date > due_date:
+                    notes = f"Prorated rent: {billable_days}/{days_in_month} days ({charge_start} to {next_month_start - timedelta(days=1)})."
                 conn.execute(sql("""
-                    INSERT INTO rental.rent_ledger (lease_id, tenant_id, due_date, amount_due, status, org_id)
-                    VALUES (:lease_id, :tenant_id, :due_date, :amount_due, 'pending', :org_id)
+                    INSERT INTO rental.rent_ledger (lease_id, tenant_id, due_date, amount_due, status, notes, org_id)
+                    VALUES (:lease_id, :tenant_id, :due_date, :amount_due, 'pending', :notes, :org_id)
                 """), {"lease_id": m["lease_id"], "tenant_id": m["tenant_id"],
-                       "due_date": due_date, "amount_due": m["monthly_obligation"], "org_id": org_id})
+                       "due_date": due_date, "amount_due": amount_due, "notes": notes, "org_id": org_id})
                 created += 1
         conn.commit()
-    return {"month": month, "created": created}
+    return {"month": month, "created": created, "eligible": len(members)}
 
 
 class AdditionalIncomePaymentBody(BaseModel):

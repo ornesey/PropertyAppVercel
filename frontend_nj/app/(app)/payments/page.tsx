@@ -113,9 +113,11 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
 
   // Derived amounts
   const obligation      = Number(row.monthly_obligation);
+  const billedAmount    = Number(row.amount_due ?? row.monthly_obligation);
+  const isProrated      = row.amount_due != null && billedAmount !== obligation;
   const paid            = Number(row.amount_paid ?? 0);
   const adjustTotal     = Number(row.adjustment_total ?? 0);
-  const netDue          = (row.amount_due != null ? Number(row.amount_due) : obligation) + adjustTotal;
+  const netDue          = billedAmount + adjustTotal;
   const remaining       = Math.max(0, netDue - paid);
 
   const defaultMethod = methods.find((m) => m.label.toLowerCase().includes("transfer"))?.code ?? methods[0]?.code ?? "";
@@ -126,13 +128,15 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
   const [payMethod, setPayMethod] = useState(defaultMethod);
   const [payNotes, setPayNotes]   = useState("");
   const [paying, setPaying]       = useState(false);
+  useEffect(() => setPayAmt(String(remaining)), [row.ledger_id, remaining]);
 
   // Promises
   const [promises, setPromises]   = useState<PayPromise[] | null>(null);
   const [prDate, setPrDate]       = useState(today);
-  const [prAmt, setPrAmt]         = useState(String(obligation));
+  const [prAmt, setPrAmt]         = useState(String(billedAmount));
   const [prNotes, setPrNotes]     = useState("");
   const [promising, setPromising] = useState(false);
+  useEffect(() => setPrAmt(String(billedAmount)), [row.ledger_id, billedAmount]);
 
   // Adjustments
   const [adjustments, setAdjustments] = useState<Adjustment[] | null>(null);
@@ -256,11 +260,11 @@ function RentRollEntry({ row, methods, selMonth, onChanged }: {
         <div className="flex items-center gap-3 shrink-0">
           {hasAdjustments ? (
             <span className="text-sm text-gray-600">
-              <span className="line-through text-gray-400 text-xs mr-1">{fmt(row.monthly_obligation)}</span>
-              {fmt(netDue)}/mo
+              <span className="line-through text-gray-400 text-xs mr-1">{fmt(billedAmount)}</span>
+              {fmt(netDue)}{isProrated ? " due" : "/mo"}
             </span>
           ) : (
-            <span className="text-sm text-gray-600">{fmt(row.monthly_obligation)}/mo</span>
+            <span className="text-sm text-gray-600">{fmt(billedAmount)}{isProrated ? " due" : "/mo"}</span>
           )}
           {row.amount_paid != null && (
             <span className="text-xs text-gray-400">paid {fmt(row.amount_paid)}</span>
@@ -666,11 +670,16 @@ function PaymentsPageInner() {
   async function generate() {
     setGenerating(true);
     setGenMsg("");
-    const r = await api<{ created: number; month: string }>(
+    const r = await api<{ created: number; eligible: number; month: string }>(
       "POST", `/api/v1/rental/ledger/generate-month?month=${selMonth}`
     );
     const created = r?.created ?? 0;
-    setGenMsg(created > 0 ? `✅ Created ${created} entries for ${selMonth}.` : "All entries already exist.");
+    const eligible = r?.eligible ?? 0;
+    setGenMsg(created > 0
+      ? `Created ${created} entries for ${selMonth}.`
+      : eligible === 0
+        ? `No active lease members overlap ${selMonth}.`
+        : "No new entries created; entries already exist.");
     setGenerating(false);
     loadRoll(selMonth);
   }
@@ -682,14 +691,14 @@ function PaymentsPageInner() {
   }
 
   // Summary stats
-  const totalDue    = useMemo(() => roll.reduce((s, r) => s + (r.payment_status === "waived" ? 0 : Number(r.monthly_obligation)), 0), [roll]);
+  const totalDue    = useMemo(() => roll.reduce((s, r) => s + (r.payment_status === "waived" ? 0 : Number(r.amount_due ?? r.monthly_obligation)), 0), [roll]);
   const totalPaid   = useMemo(() => roll.reduce((s, r) => s + Number(r.amount_paid ?? 0), 0), [roll]);
   const countPaid   = useMemo(() => roll.filter((r) => r.payment_status === "paid").length, [roll]);
   const countOut    = useMemo(() => roll.filter((r) => r.payment_status !== "paid" && r.payment_status !== "waived").length, [roll]);
 
   const isOutstanding = (r: RentRollRow) =>
     r.payment_status !== "waived" &&
-    Number(r.monthly_obligation ?? 0) + Number(r.adjustment_total ?? 0) > Number(r.amount_paid ?? 0);
+    Number(r.amount_due ?? r.monthly_obligation ?? 0) + Number(r.adjustment_total ?? 0) > Number(r.amount_paid ?? 0);
 
   const visibleRoll = useMemo(
     () => outstandingOnly ? roll.filter(isOutstanding) : roll,
