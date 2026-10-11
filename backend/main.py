@@ -1582,17 +1582,20 @@ def generate_month_ledger(month: str, org_id: int = Depends(get_org_id)):
             SELECT lm.lease_id, lm.tenant_id, lm.monthly_obligation, l.start_date
             FROM rental.lease_members lm
             JOIN rental.leases l ON l.lease_id = lm.lease_id
-            WHERE l.status = 'active'
+            WHERE (l.status_code IN (1, 2) OR l.status = 'active')
               AND l.start_date < :next_month_start
               AND (l.end_date IS NULL OR l.end_date >= :due_date)
+              AND lm.monthly_obligation > 0
         """), {"due_date": due_date, "next_month_start": next_month_start}).mappings().all()
 
         created = 0
         for m in members:
             exists = conn.execute(sql("""
                 SELECT 1 FROM rental.rent_ledger
-                WHERE lease_id = :lease_id AND tenant_id = :tenant_id AND due_date = :due_date
-            """), {"lease_id": m["lease_id"], "tenant_id": m["tenant_id"], "due_date": due_date}).fetchone()
+                WHERE lease_id = :lease_id
+                  AND tenant_id = :tenant_id
+                  AND DATE_TRUNC('month', due_date) = :month_start
+            """), {"lease_id": m["lease_id"], "tenant_id": m["tenant_id"], "month_start": due_date}).fetchone()
             if not exists:
                 start_date = m["start_date"]
                 charge_start = max(start_date, due_date)
